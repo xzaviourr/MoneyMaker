@@ -1,0 +1,37 @@
+# Core
+pydantic>=2.5.0
+structlog>=24.0.0
+
+# API
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+websockets>=12.0
+
+# Data
+yfinance>=0.2.38
+pandas>=2.0.0
+numpy>=1.26.0
+statsmodels>=0.14.0
+
+# LLM
+openai>=1.30.0       # Azure OpenAI SDK
+
+# Azure Key Vault (optional — only used if AZURE_KEY_VAULT_URL is set in .env)
+azure-identity>=1.16.0
+azure-keyvault-secrets>=4.8.0
+
+# Broker
+py5paisa>=0.7.0      # 5Paisa SDK (optional, only for live trading)
+pyotp>=2.9.0          # TOTP code generation for 5Paisa login
+
+# Sentiment
+praw>=7.7.0          # Reddit API wrapper (sentiment feed)
+
+# Agent framework
+langgraph>=0.1.0
+langchain-core>=0.2.0
+
+# Utilities
+python-dotenv>=1.0.0
+toml>=0.10.0
+aiofiles>=23.0.0
