@@ -1,0 +1,108 @@
+[system]
+name = "MoneyMaker"
+env = "sandbox"          # sandbox | paper | live
+log_level = "INFO"
+timezone = "Asia/Kolkata"
+
+[capital]
+total_capital = 1_000_000   # ₹10 lakh initial capital
+intraday_pct   = 0.40       # 40% to intraday pods
+long_term_pct  = 0.50       # 50% to long-term desk
+guardian_reserve_pct = 0.10 # 10% reserved by guardian
+
+[market_hours]
+enabled = true
+open  = "09:15"   # NSE open, IST
+close = "15:30"   # NSE close, IST — intraday pods square off here
+
+[circuit_breaker]
+daily_halt_pct       = 2.0  # halt intraday pods at -2%
+emergency_halt_pct   = 4.0  # halt everything at -4%
+consecutive_loss_days = 3   # trigger review after 3 losing days
+vix_spike_pct        = 30.0 # VIX spike threshold (% in 1 hour)
+
+[data]
+stale_feed_seconds       = 30     # quarantine if last tick > N seconds
+price_anomaly_pct        = 10.0   # flag if move > X% in Y seconds
+price_anomaly_seconds    = 60
+cross_source_threshold   = 0.5    # % difference between feeds
+
+[pods]
+sandbox_min_days         = 14     # minimum days in sandbox
+sandbox_min_pnl_pct      = 1.0    # minimum P&L threshold to graduate
+probation_capital_pct    = 0.01   # 1% of pod allocation in probation
+shadow_promote_days      = 14     # shadow must outperform live for N days
+
+[long_term_desk]
+min_conviction_to_queue  = 0.55   # min conviction to enter IdeaQueue
+idea_expiry_hours        = 48     # ideas expire after N hours
+room1_min_votes          = 4      # minimum votes for Room 1 approval
+room1_approve_threshold  = 0.60   # approval requires >60% weighted votes
+scan_interval_minutes    = 60     # how often to re-scan universe
+exchange                 = "NSE"
+
+# Nifty 50 universe for LT desk scanning
+universe = [
+  "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "INFY",
+  "SBIN", "BHARTIARTL", "KOTAKBANK", "HINDUNILVR", "LT",
+  "BAJFINANCE", "AXISBANK", "ASIANPAINT", "MARUTI", "TITAN",
+  "SUNPHARMA", "WIPRO", "ULTRACEMCO", "NTPC", "POWERGRID",
+  "NESTLEIND", "M&M", "ADANIENT", "TATAMOTORS", "HCLTECH",
+  "COALINDIA", "GRASIM", "INDUSINDBK", "ONGC", "TECHM",
+]
+
+[guardian]
+stop_loss_default_pct    = 2.0
+trailing_stop_default_pct = 1.5
+correlation_crisis_threshold = 0.85
+news_poll_seconds        = 30
+
+[feedback]
+loop1_delay_minutes      = 30    # post-trade analysis delay
+loop2_min_trades         = 20    # minimum trades for strategy analysis
+loop3_min_votes          = 50    # minimum votes for agent calibration
+loop4_frequency_days     = 30    # system review frequency
+
+[broker]
+default = "paper"  # paper | five_paisa | zerodha
+
+[broker.five_paisa]
+client_code = ""
+password    = ""
+dob         = ""
+totp_secret = ""
+app_name    = ""
+user_id     = ""
+password_key = ""
+encryption_key = ""
+
+[broker.paper]
+slippage_bps = 5.0
+commission_flat = 20.0
+
+[llm]
+provider = "azure_openai"
+
+[llm.azure_openai]
+endpoint         = ""
+api_version      = "2024-05-01-preview"
+
+[llm.azure_openai.deployments]
+fast      = "gpt-4.1-mini"
+standard  = "gpt-4.1-mini"
+reasoning = "gpt-4.1-mini"
+deep      = "gpt-4.1-mini"
+embedding = "text-embedding-3-large"
+
+[database]
+url = "sqlite+aiosqlite:///./moneymaker.db"  # switch to postgresql://... for prod
+
+[api]
+host = "0.0.0.0"
+port = 8000
+cors_origins = ["http://localhost:5173"]
+
+[market]
+nse_open  = "09:15"
+nse_close = "15:30"
+pre_open  = "09:00"

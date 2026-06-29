@@ -1,0 +1,19 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body { @apply font-sans antialiased; }
+  code { @apply font-mono; }
+}
+
+@layer components {
+  .card   { @apply bg-gray-900 rounded-xl border border-gray-800 p-4; }
+  .badge  { @apply inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium; }
+  .btn    { @apply inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors; }
+  .btn-primary { @apply btn bg-brand-500 text-white hover:bg-brand-600; }
+  .btn-danger  { @apply btn bg-danger-500 text-white hover:bg-danger-600; }
+  .btn-ghost   { @apply btn bg-transparent border border-gray-700 hover:bg-gray-800; }
+  .pnl-pos { @apply text-green-400; }
+  .pnl-neg { @apply text-red-400; }
+}
