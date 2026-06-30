@@ -1,0 +1,40 @@
+# Credentials — NEVER commit these
+.env
+*.env
+.five_paisa_session.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# Database
+*.db
+*.sqlite
+
+# Logs
+*.log
+logs/
+
+# Node
+node_modules/
+ui/node_modules/
+ui/dist/
+ui/.vite/
+npm-debug.log*
+
+# VS Code
+.vscode/
+
+# Claude
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
