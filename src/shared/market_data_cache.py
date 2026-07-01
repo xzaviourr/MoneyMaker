@@ -391,6 +391,8 @@ def get_news(symbol: str, exchange: str = "NSE", limit: int = 5) -> list[dict]:
                 "title":   n.get("content", {}).get("title", ""),
                 "summary": n.get("content", {}).get("summary", ""),
                 "pub_date": n.get("content", {}).get("pubDate", ""),
+                "link":    (n.get("content", {}).get("canonicalUrl", {}) or {}).get("url", "")
+                           or (n.get("content", {}).get("clickThroughUrl", {}) or {}).get("url", ""),
             }
             for n in raw
         ]

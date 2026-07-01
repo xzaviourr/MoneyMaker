@@ -78,6 +78,22 @@ async def get_balance() -> dict:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/holdings")
+async def get_holdings() -> list[dict]:
+    """Full position book managed by PortfolioManager — includes entry rationale,
+    stop-loss, take-profit, and source for every open holding."""
+    from ...portfolio import PortfolioManager
+    return PortfolioManager.get().get_holdings()
+
+
+@router.get("/decisions")
+async def get_decisions() -> list[dict]:
+    """PM decision log — every HOLD / SELL_ALL / SELL_PARTIAL with reasoning.
+    Persists in memory for the lifetime of the backend process (last 200)."""
+    from ...portfolio import PortfolioManager
+    return PortfolioManager.get().get_decisions()
+
+
 @router.delete("/positions/{symbol}/{exchange}")
 async def purge_bad_position(symbol: str, exchange: str) -> dict:
     """Admin cleanup — void a position that was opened on a fabricated/invalid

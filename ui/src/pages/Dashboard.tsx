@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { fetchJson, type CapitalSnapshot, type Decision } from '../lib/api'
 import { fmtInr, fmt, cn } from '../lib/utils'
 import { useStore } from '../hooks/useStore'
+import BuySuggestionsButton from '../components/NewsApprovalToast'
 
 function parseJsonSafe(raw: string | null): Record<string, unknown> | null {
   if (!raw) return null
@@ -265,7 +266,7 @@ export default function Dashboard() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold">Mission Control</h1>
-        <div className="flex gap-6 text-sm">
+        <div className="flex items-center gap-6 text-sm">
           <div>
             <span className="text-gray-500">Total Capital </span>
             <span className="font-mono font-semibold">{fmtInr(snap?.total_capital)}</span>
@@ -276,6 +277,7 @@ export default function Dashboard() {
               {dailyPnl >= 0 ? '+' : ''}{fmtInr(dailyPnl)}
             </span>
           </div>
+          <BuySuggestionsButton />
         </div>
       </div>
 

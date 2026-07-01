@@ -29,6 +29,8 @@ _STREAMED_TYPES = {
     MessageType.IDEA_APPROVED,
     MessageType.IDEA_REJECTED,
     MessageType.SYSTEM_HEALTH_REPORT,
+    MessageType.NEWS_BUY_SUGGESTED,
+    MessageType.PORTFOLIO_DECISION,
 }
 
 

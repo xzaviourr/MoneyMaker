@@ -33,6 +33,7 @@ class ExecutionTrader:
         timing: dict[str, Any],
         risk_check: dict[str, Any],
         tail_check: dict[str, Any],
+        rationale: str = "",
     ) -> ExecutionPlan:
         # Bail if any gate blocked
         if not risk_check.get("passed", False):
@@ -99,6 +100,7 @@ class ExecutionTrader:
                     max_hold_until=max_hold_until,
                     source_desk="long_term_desk",
                     strategy="long_term_idea",
+                    rationale=rationale[:500] if rationale else "",
                 )
                 result = await broker.place_order(order)
                 orders.append(result.model_dump(mode="json"))

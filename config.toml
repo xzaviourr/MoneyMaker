@@ -56,6 +56,7 @@ stop_loss_default_pct    = 2.0
 trailing_stop_default_pct = 1.5
 correlation_crisis_threshold = 0.85
 news_poll_seconds        = 30
+max_position_pct_of_total_capital = 2.0
 
 [feedback]
 loop1_delay_minutes      = 30    # post-trade analysis delay

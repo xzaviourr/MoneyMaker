@@ -4,11 +4,12 @@ import { fmtInr, fmt, cn } from '../lib/utils'
 
 export default function PositionsPage() {
   const { data: positions = [], isLoading } = useQuery<Position[]>({
-    queryKey: ['positions'],
-    queryFn:  () => fetchJson('/portfolio/positions'),
+    queryKey:        ['positions'],
+    queryFn:         () => fetchJson('/portfolio/positions'),
+    refetchInterval: 10_000,
   })
 
-  const totalUnrealisedPnl = positions.reduce((sum, p) => sum + parseFloat(p.unrealized_pnl || '0'), 0)
+  const totalPnl = positions.reduce((s, p) => s + parseFloat(p.unrealized_pnl || '0'), 0)
 
   return (
     <div className="space-y-4">
@@ -16,8 +17,8 @@ export default function PositionsPage() {
         <h1 className="text-xl font-semibold">Open Positions ({positions.length})</h1>
         <div className="text-sm">
           <span className="text-gray-500">Unrealised P&L </span>
-          <span className={cn('font-mono font-semibold', totalUnrealisedPnl >= 0 ? 'pnl-pos' : 'pnl-neg')}>
-            {totalUnrealisedPnl >= 0 ? '+' : ''}{fmtInr(totalUnrealisedPnl)}
+          <span className={cn('font-mono font-semibold', totalPnl >= 0 ? 'pnl-pos' : 'pnl-neg')}>
+            {totalPnl >= 0 ? '+' : ''}{fmtInr(totalPnl)}
           </span>
         </div>
       </div>
@@ -34,8 +35,10 @@ export default function PositionsPage() {
               <th className="px-4 py-3">Qty</th>
               <th className="px-4 py-3">Avg Price</th>
               <th className="px-4 py-3">LTP</th>
+              <th className="px-4 py-3">Stop Loss</th>
+              <th className="px-4 py-3">Target</th>
               <th className="px-4 py-3">Unrealised P&L</th>
-              <th className="px-4 py-3">% Change</th>
+              <th className="px-4 py-3">%</th>
             </tr>
           </thead>
           <tbody>
@@ -52,8 +55,16 @@ export default function PositionsPage() {
                     </span>
                   </td>
                   <td className="px-4 py-3 font-mono text-sm">{p.quantity}</td>
-                  <td className="px-4 py-3 font-mono text-sm">{fmtInr(p.average_price)}</td>
-                  <td className="px-4 py-3 font-mono text-sm">{p.current_price ? fmtInr(p.current_price) : '—'}</td>
+                  <td className="px-4 py-3 font-mono text-sm">{fmtInr(parseFloat(p.average_price))}</td>
+                  <td className="px-4 py-3 font-mono text-sm">
+                    {p.current_price ? fmtInr(parseFloat(p.current_price)) : '—'}
+                  </td>
+                  <td className="px-4 py-3 font-mono text-sm text-red-400">
+                    {p.stop_loss ? fmtInr(parseFloat(p.stop_loss)) : '—'}
+                  </td>
+                  <td className="px-4 py-3 font-mono text-sm text-green-400">
+                    {p.take_profit ? fmtInr(parseFloat(p.take_profit)) : '—'}
+                  </td>
                   <td className={cn('px-4 py-3 font-mono text-sm', pnl >= 0 ? 'pnl-pos' : 'pnl-neg')}>
                     {pnl >= 0 ? '+' : ''}{fmtInr(pnl)}
                   </td>
@@ -64,7 +75,7 @@ export default function PositionsPage() {
               )
             })}
             {!isLoading && positions.length === 0 && (
-              <tr><td colSpan={8} className="px-4 py-8 text-center text-gray-600">No open positions</td></tr>
+              <tr><td colSpan={10} className="px-4 py-8 text-center text-gray-600">No open positions</td></tr>
             )}
           </tbody>
         </table>

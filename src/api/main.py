@@ -20,7 +20,7 @@ import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .routes import portfolio, pods, decisions, commands, feedback, system, logs
+from .routes import portfolio, pods, decisions, commands, feedback, system, logs, news
 from .websocket.live_feed import router as ws_router
 
 log = structlog.get_logger(__name__)
@@ -55,6 +55,7 @@ app.include_router(commands.router,  prefix="/commands",   tags=["commands"])
 app.include_router(feedback.router,  prefix="/feedback",   tags=["feedback"])
 app.include_router(system.router,    prefix="/system",     tags=["system"])
 app.include_router(logs.router,      prefix="/logs",       tags=["logs"])
+app.include_router(news.router,      prefix="/news",       tags=["news"])
 app.include_router(ws_router,                              tags=["websocket"])
 
 
