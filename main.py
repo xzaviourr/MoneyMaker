@@ -59,6 +59,7 @@ from src.supervisor.pod_supervisor import PodSupervisor
 from src.supervisor.firm_cio import FirmCIO
 from src.long_term_desk import LongTermDesk
 from src.guardian.portfolio_guardian import PortfolioGuardian
+from src.portfolio import PortfolioManager
 from src.feedback import (
     TradeAttributionEngine,
     StrategyPerformanceAnalyzer,
@@ -248,7 +249,11 @@ async def _boot(paper: bool = False, api_only: bool = False, demo: bool = False)
     await guardian.start()
     set_system_refs(pod_supervisor=pod_supervisor, llm_gateway=llm, broker_gateway=broker, lt_desk=lt_desk, guardian=guardian)
 
-    # 10. Firm CIO
+    # 10. Portfolio Manager (tracks fills, evaluates news, manages exits)
+    portfolio_manager = PortfolioManager.get()
+    await portfolio_manager.start()
+
+    # 11. Firm CIO
     cio = FirmCIO()
     await cio.start()
 

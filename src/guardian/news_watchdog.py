@@ -10,6 +10,7 @@ import csv
 import io
 import re
 import time
+import uuid
 from datetime import datetime
 from typing import Optional
 
@@ -40,6 +41,8 @@ _REDDIT_POLL_INTERVAL = 300  # seconds — retail sentiment from finance subredd
 _SYNTHESIS_POLL_INTERVAL = 90    # seconds — how often to check for cross-source overlap
 _SYNTHESIS_WINDOW_S      = 1200  # seconds — items older than this don't count as "the same story"
 _MAX_WATCHED_SYMBOLS     = 100   # cap on the dynamically-grown per-symbol news watchlist
+_MAX_PENDING_APPROVALS   = 20    # cap on outstanding "should we buy this?" prompts
+_APPROVAL_COOLDOWN_S     = 24 * 3600  # don't re-suggest the same symbol within 24h
 
 # Company name → NSE symbol, so a market-wide RSS headline ("Reliance signs deal...")
 # can be attributed to a real, tradeable symbol instead of a generic "MARKET" tag.
@@ -156,6 +159,15 @@ class NewsWatchdog:
         # Every single stock-specific article gets a buy/avoid/watch gist here —
         # unlike _synthesis_feed, this does NOT wait for 2+ sources to agree.
         self._gist_feed: list[dict] = []  # most recent first, capped at 30
+        # Every "buy" stance gist also becomes an outstanding approval prompt —
+        # pushed live to the UI, executed as a real paper-broker order only if
+        # the user explicitly approves it. Never auto-traded.
+        self._pending_approvals: list[dict] = []
+        # Once a symbol gets a buy suggestion, it's blocked from getting another
+        # one for _APPROVAL_COOLDOWN_S — otherwise three similar headlines about
+        # the same stock would queue three separate "buy this?" prompts, and
+        # approving each one would mean buying the same stock again and again.
+        self._approval_cooldown: dict[str, float] = {}
         self._seen_articles: set[str] = set()
         self._seen_rss: set[str] = set()
         self._seen_reddit: set[str] = set()
@@ -196,6 +208,21 @@ class NewsWatchdog:
         underlying list is already newest-first and sorted() is stable."""
         priority = {"buy": 0, "avoid": 0, "watch": 1}
         return sorted(self._gist_feed, key=lambda g: priority.get(g.get("stance"), 1))
+
+    def get_pending_approvals(self) -> list[dict]:
+        return list(self._pending_approvals)
+
+    def get_approval(self, approval_id: str) -> Optional[dict]:
+        """Read-only lookup — unlike pop_approval(), doesn't resolve/remove it."""
+        return next((a for a in self._pending_approvals if a["id"] == approval_id), None)
+
+    def pop_approval(self, approval_id: str) -> Optional[dict]:
+        """Remove and return one pending approval (resolved either way —
+        approved and executed, or rejected and discarded)."""
+        for i, item in enumerate(self._pending_approvals):
+            if item["id"] == approval_id:
+                return self._pending_approvals.pop(i)
+        return None
 
     def remove_symbol(self, symbol: str) -> None:
         self._watched_symbols.pop(symbol, None)
@@ -360,7 +387,7 @@ class NewsWatchdog:
                 self.add_symbols([symbol])
 
             analysis = await self._analyse_news(symbol, text)
-            await self._handle_analysis(symbol, analysis, f"[{source}] {title}", f"rss:{source}")
+            await self._handle_analysis(symbol, analysis, f"[{source}] {title}", f"rss:{source}", link)
             await self._feed_long_term_desk(symbol, analysis, f"[{source}] {title}")
 
             if symbol != "MARKET" and self._event_pod is not None:
@@ -392,7 +419,7 @@ class NewsWatchdog:
 
             analysis = await self._analyse_news(symbol, text)
             headline = f"[r/{post.get('subreddit', 'reddit')}] {title}"
-            await self._handle_analysis(symbol, analysis, headline, "reddit")
+            await self._handle_analysis(symbol, analysis, headline, "reddit", url)
             await self._feed_long_term_desk(symbol, analysis, headline)
 
             if symbol != "MARKET" and self._event_pod is not None:
@@ -414,7 +441,7 @@ class NewsWatchdog:
 
                 content = article.get("summary", "")
                 analysis = await self._analyse_news(symbol, f"{title}\n{content}")
-                await self._handle_analysis(symbol, analysis, title, "yahoo_finance")
+                await self._handle_analysis(symbol, analysis, title, "yahoo_finance", article.get("link", ""))
                 await self._feed_long_term_desk(symbol, analysis, title)
 
                 if self._event_pod is not None:
@@ -454,6 +481,33 @@ class NewsWatchdog:
             "ts":        datetime.utcnow().isoformat(),
         })
         self._gist_feed = self._gist_feed[:30]
+
+    async def _queue_approval(self, symbol: str, source: str, analysis: dict, headline: str, link: str = "") -> None:
+        """Surface a "buy" gist as something the user can actually act on —
+        pushed live over the websocket, only ever executed on explicit
+        approval (see /news/approve in the API)."""
+        if time.time() < self._approval_cooldown.get(symbol, 0):
+            return  # already suggested (or just resolved) recently — don't pile on
+        self._approval_cooldown[symbol] = time.time() + _APPROVAL_COOLDOWN_S
+
+        approval = {
+            "id":        str(uuid.uuid4()),
+            "symbol":    symbol,
+            "source":    source,
+            "headline":  headline,
+            "rationale": analysis.get("rationale", ""),
+            "link":      link,
+            "ts":        datetime.utcnow().isoformat(),
+        }
+        self._pending_approvals.insert(0, approval)
+        self._pending_approvals = self._pending_approvals[:_MAX_PENDING_APPROVALS]
+        await self._bus.publish(
+            Message(
+                type=MessageType.NEWS_BUY_SUGGESTED,
+                source="news_watchdog",
+                payload=approval,
+            )
+        )
 
     async def _synthesis_loop(self) -> None:
         while True:
@@ -517,8 +571,29 @@ class NewsWatchdog:
             return {"severity": "INFO", "sentiment": "neutral",
                     "recommended_action": "hold", "rationale": "LLM unavailable"}
 
-    async def _handle_analysis(self, symbol: str, analysis: dict, headline: str, source: str) -> None:
+    async def _handle_analysis(self, symbol: str, analysis: dict, headline: str, source: str, link: str = "") -> None:
         self._record_gist(symbol, source, analysis, headline)
+
+        if symbol != "MARKET" and analysis.get("stance") == "buy":
+            await self._queue_approval(symbol, source, analysis, headline, link)
+
+        # Always forward stock-specific analysis to the PortfolioManager so it can
+        # evaluate the news against any held position in that stock.
+        if symbol != "MARKET":
+            await self._bus.publish(Message(
+                type=MessageType.NEWS_SIGNAL,
+                source="news_watchdog",
+                payload={
+                    "symbol": symbol,
+                    "source": source,
+                    "headline": headline,
+                    "stance": analysis.get("stance", "watch"),
+                    "severity": analysis.get("severity", "INFO"),
+                    "recommended_action": analysis.get("recommended_action", "hold"),
+                    "rationale": analysis.get("rationale", ""),
+                    "link": link,
+                },
+            ))
 
         severity = analysis.get("severity", "INFO")
         mode_map = {"WARNING": GuardianResponseMode.ALERT,

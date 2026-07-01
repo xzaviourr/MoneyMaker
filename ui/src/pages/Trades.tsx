@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { fetchJson, type Trade } from '../lib/api'
-import { fmtInr, cn } from '../lib/utils'
+import { fmtInr, fmtPrice, cn } from '../lib/utils'
 
 // How long a position was actually held, from the original buy to this sell —
 // not shown anywhere before, since the trade book only stored the closing
@@ -83,16 +83,16 @@ export default function TradesPage() {
                 </td>
                 <td className="px-4 py-3 font-mono text-sm">{t.quantity}</td>
                 <td className="px-4 py-3 font-mono text-sm">
-                  {t.entry_price != null ? fmtInr(t.entry_price) : (t.side === 'buy' ? fmtInr(t.price) : '—')}
+                  {t.entry_price != null ? fmtPrice(t.entry_price) : (t.side === 'buy' ? fmtPrice(t.price) : '—')}
                 </td>
                 <td className="px-4 py-3 font-mono text-sm">
-                  {t.entry_price != null ? fmtInr(t.price) : '— still open —'}
+                  {t.entry_price != null ? fmtPrice(t.price) : '— still open —'}
                 </td>
                 <td className="px-4 py-3 font-mono text-sm text-gray-400">
                   {t.entry_price != null ? holdingDuration(t.entry_time, t.timestamp) : '—'}
                 </td>
-                <td className={cn('px-4 py-3 font-mono text-sm', t.pnl >= 0 ? 'pnl-pos' : 'pnl-neg')}>
-                  {t.entry_price != null ? `${t.pnl >= 0 ? '+' : ''}${fmtInr(t.pnl)}` : '—'}
+                <td className={cn('px-4 py-3 font-mono text-sm font-semibold', t.pnl >= 0 ? 'pnl-pos' : 'pnl-neg')}>
+                  {t.entry_price != null ? `${t.pnl >= 0 ? '+' : ''}${fmtPrice(t.pnl)}` : '—'}
                 </td>
                 <td className="px-4 py-3 text-xs text-gray-400">{t.source_pod || t.source_desk || '—'}</td>
               </tr>

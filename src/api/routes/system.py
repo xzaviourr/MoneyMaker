@@ -49,6 +49,10 @@ def set_system_refs(pod_supervisor=None, llm_gateway=None, broker_gateway=None, 
     _guardian        = guardian
 
 
+def get_guardian() -> Any:
+    return _guardian
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _age(ts: float | None) -> str:

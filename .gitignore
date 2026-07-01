@@ -22,8 +22,18 @@ build/
 *.log
 logs/
 
+# Node
+node_modules/
+ui/node_modules/
+ui/dist/
+ui/.vite/
+npm-debug.log*
+
 # VS Code
 .vscode/
+
+# Claude
+.claude/
 
 # OS
 .DS_Store

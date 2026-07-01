@@ -138,6 +138,11 @@ class MessageType(str, Enum):
     GUARDIAN_ALERT      = "guardian_alert"
     GUARDIAN_HEDGE      = "guardian_hedge"
     GUARDIAN_LIQUIDATE  = "guardian_liquidate"
+    # News Extractor
+    NEWS_BUY_SUGGESTED  = "news_buy_suggested"
+    NEWS_SIGNAL         = "news_signal"         # any stock-specific analysis (all stances)
+    # Portfolio Manager
+    PORTFOLIO_DECISION  = "portfolio_decision"  # hold/sell decision with reasoning
     # Long-term desk
     IDEA_APPROVED         = "idea_approved"
     IDEA_REJECTED         = "idea_rejected"
@@ -322,6 +327,7 @@ class Order(BaseModel):
     updated_at:        datetime      = Field(default_factory=datetime.utcnow)
     broker_order_id:   Optional[str] = None
     tag:               Optional[str] = None
+    rationale:         str           = ""
 
     @property
     def is_complete(self) -> bool:

@@ -25,6 +25,7 @@ export interface CapitalSnapshot {
 }
 
 export interface Position {
+  id:                 string
   symbol:             string
   exchange:           string
   side:               string
@@ -33,6 +34,13 @@ export interface Position {
   current_price:      string | null
   unrealized_pnl:     string
   unrealized_pnl_pct: number | null
+  stop_loss:          string | null
+  take_profit:        string | null
+  max_hold_until:     string | null
+  source_pod:         string | null
+  source_desk:        string | null
+  strategy:           string | null
+  opened_at:          string | null
 }
 
 export interface PodInfo {
