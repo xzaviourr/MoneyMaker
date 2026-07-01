@@ -231,7 +231,7 @@ class LongTermDesk:
         risk_check  = await self._risk_gate.check(alloc_plan, opp_cost, cartographer, snap)
         tail_check  = await self._tail_risk.check(alloc_plan)
         timing      = await self._timer.advise(alloc_plan)
-        exec_plan   = await self._trader.execute(alloc_plan, timing, risk_check, tail_check)
+        exec_plan   = await self._trader.execute(alloc_plan, timing, risk_check, tail_check, rationale=verdict.reasoning)
         await self._auditor.audit(alloc_plan, exec_plan, current_price)
 
         # Tie the reasoning back to what actually happened — bought or not,

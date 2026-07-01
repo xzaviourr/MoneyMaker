@@ -23,3 +23,12 @@ export function fmtInr(n: string | number | null | undefined): string {
     style: 'currency', currency: 'INR', maximumFractionDigits: 0,
   }).format(num)
 }
+
+export function fmtPrice(n: string | number | null | undefined): string {
+  if (n == null) return '—'
+  const num = typeof n === 'string' ? parseFloat(n) : n
+  if (isNaN(num)) return '—'
+  return new Intl.NumberFormat('en-IN', {
+    style: 'currency', currency: 'INR', minimumFractionDigits: 2, maximumFractionDigits: 2,
+  }).format(num)
+}

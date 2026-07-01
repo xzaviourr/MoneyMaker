@@ -137,6 +137,9 @@ class BasePod(ABC):
         self._regime_classifier = regime_classifier
         symbols = self.watchlist()
         await self._gateway.stream_quotes(symbols, self._on_quote)
+        # Catch positions closed by PositionMonitor — it bypasses _exit_position()
+        # so win/loss counters would never update without this subscriber.
+        self._bus.subscribe(MessageType.ORDER_FILLED, self._on_external_fill)
         log.info("pod.started", pod_id=self.pod_id, symbols=[s for s, _ in symbols])
 
     async def stop(self) -> None:
@@ -449,6 +452,49 @@ class BasePod(ABC):
                 outputs={"quantity": pos.quantity, "fill_price": str(result.average_fill_price),
                          "pnl": str(realized_pnl)},
             )
+
+    async def _on_external_fill(self, msg: Message) -> None:
+        """Handles ORDER_FILLED published by PositionMonitor or Portfolio Manager —
+        any code path that closes a pod position WITHOUT going through _exit_position().
+        If _exit_position() already handled the fill, the position will already be
+        gone from self._positions so this is a safe no-op in that case."""
+        payload = msg.payload or {}
+        order   = payload.get("order", {})
+        result  = payload.get("result", {})
+
+        if order.get("source_pod") != self.pod_id:
+            return
+        if order.get("side") != "sell":
+            return
+
+        symbol   = order.get("symbol", "")
+        exchange = order.get("exchange", "NSE")
+        key      = f"{symbol}_{exchange}"
+
+        pos = self._positions.get(key)
+        if pos is None:
+            return  # pod's own _exit_position() already handled and removed it
+
+        fill_price = result.get("average_fill_price")
+        if not fill_price:
+            self._positions.pop(key, None)
+            return
+
+        realized_pnl = (Decimal(str(fill_price)) - pos.average_price) * pos.quantity - self._commission
+        self._daily_pnl += realized_pnl
+        self._total_pnl += realized_pnl
+        if realized_pnl > 0:
+            self._win_count += 1
+        else:
+            self._loss_count += 1
+        self._save_metrics()
+        self._positions.pop(key, None)
+        log.info(
+            "pod.position_closed_externally",
+            pod_id  = self.pod_id,
+            symbol  = symbol,
+            pnl     = str(realized_pnl),
+        )
 
     async def _close_all_positions(self) -> None:
         for key, pos in list(self._positions.items()):
