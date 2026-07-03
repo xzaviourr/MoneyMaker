@@ -23,6 +23,7 @@ from ...shared.schemas import (
 )
 from ..base_pod import BasePod
 from ...brokers.broker_gateway import BrokerGateway
+from ...shared.config import toml_cfg
 
 log = structlog.get_logger(__name__)
 
@@ -32,6 +33,13 @@ _DEFAULT_WATCHLIST = [
     ("KOTAKBANK", "NSE"), ("BHARTIARTL", "NSE"), ("ITC", "NSE"),
     ("AXISBANK", "NSE"),
 ]
+
+
+def _load_watchlist(override: list | None) -> list[tuple[str, str]]:
+    if override:
+        return override
+    syms = toml_cfg.get("watchlists", {}).get("momentum", [])
+    return [(s, "NSE") for s in syms] if syms else _DEFAULT_WATCHLIST
 
 
 class MomentumPod(BasePod):
@@ -64,7 +72,7 @@ class MomentumPod(BasePod):
         self._fast_period  = fast_ema
         self._slow_period  = slow_ema
         self._vol_mult     = volume_multiplier
-        self._watchlist    = watchlist or _DEFAULT_WATCHLIST
+        self._watchlist    = _load_watchlist(watchlist)
 
         # Per-symbol price and volume queues
         self._prices: dict[str, deque[float]] = defaultdict(

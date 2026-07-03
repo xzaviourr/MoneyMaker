@@ -61,6 +61,9 @@ class MessageBus:
     # ── Publishing ─────────────────────────────────────────────────────────
 
     async def publish(self, message: Message) -> None:
+        qsize = self._queue.qsize()
+        if qsize >= 16_000:  # 80 % of maxsize=20_000
+            log.warning("bus.queue_high_watermark", qsize=qsize, type=message.type.value)
         try:
             await self._queue.put(message)
             self._stats[message.type.value] += 1
@@ -122,6 +125,8 @@ class MessageBus:
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         for handler, result in zip(all_handlers, results):
+            if isinstance(result, asyncio.CancelledError):
+                raise result
             if isinstance(result, Exception):
                 log.error(
                     "bus.handler_error",

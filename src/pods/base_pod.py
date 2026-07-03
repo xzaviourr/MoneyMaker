@@ -99,15 +99,18 @@ class BasePod(ABC):
 
     def _save_metrics(self) -> None:
         try:
+            import os
             path = self._metrics_path()
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps({
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps({
                 "total_pnl":   str(self._total_pnl),
                 "daily_pnl":   str(self._daily_pnl),
                 "trade_count": self._trade_count,
                 "loss_count":  self._loss_count,
                 "win_count":   self._win_count,
             }))
+            os.replace(tmp, path)
         except Exception:
             log.exception("pod.metrics_save_failed", pod_id=self.pod_id)
 
@@ -135,12 +138,34 @@ class BasePod(ABC):
 
     async def start(self, regime_classifier: Optional[RegimeClassifier] = None) -> None:
         self._regime_classifier = regime_classifier
+        await self._reconcile_with_broker()
         symbols = self.watchlist()
         await self._gateway.stream_quotes(symbols, self._on_quote)
         # Catch positions closed by PositionMonitor — it bypasses _exit_position()
         # so win/loss counters would never update without this subscriber.
         self._bus.subscribe(MessageType.ORDER_FILLED, self._on_external_fill)
         log.info("pod.started", pod_id=self.pod_id, symbols=[s for s, _ in symbols])
+
+    async def _reconcile_with_broker(self) -> None:
+        """On restart: reload any open positions that belong to this pod from the broker.
+        Without this, a system crash while trades are open leaves the pod blind to its
+        own holdings — every subsequent tick would skip exit checks, and stop-losses
+        and take-profits would never fire."""
+        try:
+            broker_positions = await self._gateway.get_positions()
+        except Exception as exc:
+            log.warning("pod.reconcile_failed", pod_id=self.pod_id, error=str(exc))
+            return
+        restored = 0
+        for pos in broker_positions:
+            if pos.source_pod != self.pod_id:
+                continue
+            key = f"{pos.symbol}_{pos.exchange.value}"
+            if key not in self._positions:
+                self._positions[key] = pos
+                restored += 1
+        if restored:
+            log.info("pod.reconciled", pod_id=self.pod_id, restored=restored)
 
     async def stop(self) -> None:
         if self._task and not self._task.done():
@@ -186,16 +211,20 @@ class BasePod(ABC):
             })
             # Check stop-loss / take-profit / max holding time
             if pos.stop_loss and quote.ltp <= pos.stop_loss:
-                await self._exit_position(pos, quote, reason="stop_loss")
+                await self._exit_position(pos, quote,
+                    reason=f"Stop-loss hit — price ₹{float(quote.ltp):.2f} fell to stop ₹{float(pos.stop_loss):.2f}")
                 return
             if pos.take_profit and quote.ltp >= pos.take_profit:
-                await self._exit_position(pos, quote, reason="take_profit")
+                await self._exit_position(pos, quote,
+                    reason=f"Take-profit hit — price ₹{float(quote.ltp):.2f} reached target ₹{float(pos.take_profit):.2f}")
                 return
             if pos.max_hold_until and datetime.utcnow() >= pos.max_hold_until:
-                await self._exit_position(pos, quote, reason="max_holding_time")
+                await self._exit_position(pos, quote,
+                    reason="Maximum holding time reached — intraday square-off")
                 return
             if not is_market_open():
-                await self._exit_position(pos, quote, reason="market_closed_square_off")
+                await self._exit_position(pos, quote,
+                    reason="Market closing — intraday square-off")
                 return
 
         # Intraday pods only open new positions during NSE hours (09:15-15:30 IST)

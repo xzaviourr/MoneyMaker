@@ -20,6 +20,8 @@ import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .middleware.auth import ApiKeyMiddleware
+from .middleware.request_id import RequestIdMiddleware
 from .routes import portfolio, pods, decisions, commands, feedback, system, logs, news
 from .websocket.live_feed import router as ws_router
 
@@ -40,6 +42,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.add_middleware(RequestIdMiddleware)
+app.add_middleware(ApiKeyMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -62,3 +66,22 @@ app.include_router(ws_router,                              tags=["websocket"])
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok", "service": "moneymaker-api"}
+
+
+@app.get("/ready")
+async def ready() -> dict:
+    """Readiness probe — confirms the bus and broker are up before accepting traffic."""
+    from .websocket.live_feed import manager
+    from ..shared.message_bus import MessageBus
+    bus = MessageBus.get()
+    checks = {
+        "bus": bus._running,
+        "ws_clients": manager.count,
+    }
+    try:
+        from ..brokers.broker_gateway import BrokerGateway
+        checks["broker"] = BrokerGateway.get().is_connected
+    except Exception:
+        checks["broker"] = False
+    all_ok = checks["bus"] and checks["broker"]
+    return {"status": "ready" if all_ok else "not_ready", **checks}

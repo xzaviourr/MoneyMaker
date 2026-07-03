@@ -54,13 +54,30 @@ function agentLabel(agentId: string): { label: string; color: string } {
   if (agentId.includes('bear'))              return { label: 'Bear Advocate',      color: 'text-red-400'    }
   if (agentId.includes('devil'))             return { label: "Devil's Advocate",   color: 'text-orange-400' }
   if (agentId.includes('sector'))            return { label: 'Sector Specialist',  color: 'text-blue-400'   }
-  if (agentId.includes('momentum'))          return { label: 'Momentum Analyst',   color: 'text-cyan-400'   }
+  if (agentId.includes('momentum'))          return { label: 'Momentum Pod',       color: 'text-cyan-400'   }
+  if (agentId.includes('breakout'))          return { label: 'Breakout Pod',       color: 'text-teal-400'   }
+  if (agentId.includes('mean_rev'))          return { label: 'Mean Reversion Pod', color: 'text-indigo-400' }
+  if (agentId.includes('position_monitor'))  return { label: 'Position Monitor',   color: 'text-yellow-400' }
   if (agentId.includes('portfolio_manager')) return { label: 'Portfolio Manager',  color: 'text-yellow-400' }
   if (agentId.includes('news_watchdog'))     return { label: 'News Watchdog',      color: 'text-pink-400'   }
   if (agentId.includes('risk'))              return { label: 'Risk Gate',          color: 'text-red-400'    }
-  if (agentId.includes('execution'))        return { label: 'Execution Trader',   color: 'text-teal-400'   }
-  if (agentId.includes('alloc'))            return { label: 'Allocation Chair',   color: 'text-indigo-400' }
+  if (agentId.includes('execution'))         return { label: 'Execution Trader',   color: 'text-teal-400'   }
+  if (agentId.includes('alloc'))             return { label: 'Allocation Chair',   color: 'text-indigo-400' }
   return { label: agentId.replace(/[._]/g, ' '), color: 'text-gray-400' }
+}
+
+function agentCardStyle(color: string): string {
+  if (color.includes('purple')) return 'border-purple-900/60 bg-purple-950/10'
+  if (color.includes('green'))  return 'border-green-900/50 bg-green-950/10'
+  if (color.includes('cyan'))   return 'border-cyan-900/50 bg-cyan-950/10'
+  if (color.includes('teal'))   return 'border-teal-900/50 bg-teal-950/10'
+  if (color.includes('indigo')) return 'border-indigo-900/50 bg-indigo-950/10'
+  if (color.includes('yellow')) return 'border-yellow-900/50 bg-yellow-950/10'
+  if (color.includes('orange')) return 'border-orange-900/50 bg-orange-950/10'
+  if (color.includes('pink'))   return 'border-pink-900/50 bg-pink-950/10'
+  if (color.includes('red'))    return 'border-red-900/50 bg-red-950/10'
+  if (color.includes('blue'))   return 'border-blue-900/50 bg-blue-950/10'
+  return 'border-gray-800 bg-gray-900'
 }
 
 // ── decision card ─────────────────────────────────────────────────────────────
@@ -82,10 +99,7 @@ function DecisionCard({ d, expanded, onToggle, onViewDebate }: {
   const bearConv        = inputs.bear_conviction as number | undefined
 
   return (
-    <div className={cn(
-      'rounded-xl border overflow-hidden',
-      isChair ? 'border-purple-900/60 bg-purple-950/10' : 'border-gray-800 bg-gray-900',
-    )}>
+    <div className={cn('rounded-xl border overflow-hidden', agentCardStyle(agent.color))}>
       {/* header — always visible */}
       <button
         className="w-full text-left px-4 py-3 flex items-start gap-3"
@@ -103,9 +117,9 @@ function DecisionCard({ d, expanded, onToggle, onViewDebate }: {
                 'text-[10px] font-bold uppercase px-1.5 py-0.5 rounded-full border',
                 approved
                   ? 'bg-green-900/60 text-green-300 border-green-800'
-                  : 'bg-red-900/60 text-red-300 border-red-800',
+                  : 'bg-gray-800 text-gray-400 border-gray-700',
               )}>
-                {approved ? 'Approved' : 'Rejected'}
+                {approved ? 'Buy Signal' : 'Declined'}
               </span>
             )}
             {finalConviction != null && (

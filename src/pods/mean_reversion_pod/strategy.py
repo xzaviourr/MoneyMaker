@@ -22,15 +22,21 @@ from ...shared.schemas import (
 )
 from ..base_pod import BasePod
 from ...brokers.broker_gateway import BrokerGateway
+from ...shared.config import toml_cfg
 
 log = structlog.get_logger(__name__)
 
-_WATCHLIST = [
+_DEFAULT_WATCHLIST = [
     ("HDFCBANK", "NSE"), ("ICICIBANK", "NSE"), ("SBIN", "NSE"),
     ("WIPRO", "NSE"), ("TECHM", "NSE"), ("LT", "NSE"),
     ("ADANIPORTS", "NSE"), ("BPCL", "NSE"), ("HINDUNILVR", "NSE"),
     ("TITAN", "NSE"),
 ]
+
+
+def _load_watchlist() -> list[tuple[str, str]]:
+    syms = toml_cfg.get("watchlists", {}).get("mean_rev", [])
+    return [(s, "NSE") for s in syms] if syms else _DEFAULT_WATCHLIST
 
 
 class MeanReversionPod(BasePod):
@@ -68,7 +74,7 @@ class MeanReversionPod(BasePod):
         self._prices: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=100))
 
     def watchlist(self) -> list[tuple[str, str]]:
-        return _WATCHLIST
+        return _load_watchlist()
 
     async def generate_signal(self, quote: Quote) -> Optional[TradeSignal]:
         key = quote.symbol

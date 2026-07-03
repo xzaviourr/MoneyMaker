@@ -91,7 +91,9 @@ class PaperBroker(BaseBroker):
                 "positions":  {k: json.loads(v.model_dump_json()) for k, v in self._positions.items()},
                 "trade_book": self._trade_book,
             }
-            _STATE_PATH.write_text(json.dumps(data))
+            tmp = _STATE_PATH.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data))
+            import os; os.replace(tmp, _STATE_PATH)
         except Exception as exc:
             log.error("paper_broker.state_save_failed", error=str(exc))
 
@@ -146,9 +148,15 @@ class PaperBroker(BaseBroker):
             price = Decimal(str(fetched))
         else:
             existing = self._positions.get(key)
-            price = existing.current_price if existing and existing.current_price > 0 else Decimal("100.0")
-            log.warning("paper_broker.quote_fallback_to_last_known", symbol=symbol,
-                        used_position_price=bool(existing))
+            if existing and existing.current_price > 0:
+                price = existing.current_price
+                log.warning("paper_broker.quote_fallback_to_last_known",
+                            symbol=symbol, price=str(price))
+            else:
+                raise ValueError(
+                    f"No live quote and no known price for {symbol}/{exchange}. "
+                    "Cannot fabricate a fill price."
+                )
         now = datetime.utcnow()
         return Quote(
             symbol=symbol,

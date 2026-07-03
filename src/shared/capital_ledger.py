@@ -65,6 +65,10 @@ class CapitalLedger:
 
     async def allocate_to_pod(self, pillar: str, pod_id: str, amount: Decimal) -> Decimal:
         async with self._lock:
+            if pillar not in self._pillars:
+                raise CapitalError(
+                    f"Unknown pillar '{pillar}'. Known pillars: {list(self._pillars)}"
+                )
             alloc = self._pillars[pillar]
             if amount > alloc.available:
                 raise CapitalError(
@@ -90,6 +94,10 @@ class CapitalLedger:
         self, pillar: str, pod_id: str, amount: Decimal, pnl: Decimal = Decimal("0")
     ) -> None:
         async with self._lock:
+            if pillar not in self._pillars:
+                raise CapitalError(
+                    f"Unknown pillar '{pillar}'. Known pillars: {list(self._pillars)}"
+                )
             alloc = self._pillars[pillar]
             return_amount = amount + pnl
             self._pillars[pillar] = alloc.model_copy(

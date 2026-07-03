@@ -6,7 +6,7 @@ Lifecycle: SANDBOX → PROBATION → LIVE → REVIEW → KILLED
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING, Optional
 
@@ -40,6 +40,7 @@ class PodSupervisor:
 
         self._pods: dict[str, "BasePod"]  = {}
         self._metrics: dict[str, PodMetrics] = {}
+        self._last_seen: dict[str, datetime] = {}
         self._capital = CapitalTracker.get()
         self._decay   = AlphaDecayMonitor()
         self._bus     = MessageBus.get()
@@ -124,6 +125,7 @@ class PodSupervisor:
     async def update_metrics(self, pod_id: str, metrics: PodMetrics) -> None:
         async with self._lock:
             self._metrics[pod_id] = metrics
+            self._last_seen[pod_id] = datetime.now(timezone.utc)
 
         # Check for alpha decay on every update
         if metrics.total_trades >= 20:
@@ -198,8 +200,39 @@ class PodSupervisor:
         return self._pods
 
     async def start(self) -> None:
-        """Subscribe to bus events (compensates for sync subscribe calls in __init__)."""
+        """Subscribe to bus events and start health check loop."""
+        asyncio.create_task(self._health_check_loop(), name="pod_health_check")
         log.info("pod_supervisor.started", pods=len(self._pods))
+
+    async def _health_check_loop(self) -> None:
+        """Every 60s: if a pod hasn't reported metrics in 2 min, warn and release its capital."""
+        while True:
+            await asyncio.sleep(60)
+            now = datetime.now(timezone.utc)
+            async with self._lock:
+                pods = dict(self._pods)
+            for pod_id, pod in pods.items():
+                if pod.state in (PodState.KILLED, PodState.SANDBOX):
+                    continue
+                last = self._last_seen.get(pod_id)
+                if last is None:
+                    continue
+                silent_secs = (now - last).total_seconds()
+                if silent_secs > 120:
+                    log.error(
+                        "pod_supervisor.pod_silent",
+                        pod_id=pod_id,
+                        silent_seconds=int(silent_secs),
+                    )
+                    allocation = self._capital.get_pod_allocation(pod_id)
+                    if allocation > 0:
+                        metrics = self._metrics.get(pod_id)
+                        pnl = metrics.total_pnl if metrics else Decimal("0")
+                        await self._capital.return_from_pod("intraday", pod_id, allocation, pnl)
+                        log.warning(
+                            "pod_supervisor.capital_released_on_silence",
+                            pod_id=pod_id, released=str(allocation),
+                        )
 
     async def handle_command(self, pod_id: str, action: str) -> None:
         """Handle API lifecycle command for a pod."""
