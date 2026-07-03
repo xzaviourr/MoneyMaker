@@ -22,15 +22,21 @@ from ...shared.schemas import (
 )
 from ..base_pod import BasePod
 from ...brokers.broker_gateway import BrokerGateway
+from ...shared.config import toml_cfg
 
 log = structlog.get_logger(__name__)
 
-_WATCHLIST = [
+_DEFAULT_WATCHLIST = [
     ("NIFTY", "NSE"), ("RELIANCE", "NSE"), ("TATAMOTORS", "NSE"),
     ("WIPRO", "NSE"), ("SUNPHARMA", "NSE"), ("BAJAJFINSV", "NSE"),
     ("MARUTI", "NSE"), ("TATASTEEL", "NSE"), ("HCLTECH", "NSE"),
     ("POWERGRID", "NSE"),
 ]
+
+
+def _load_watchlist() -> list[tuple[str, str]]:
+    syms = toml_cfg.get("watchlists", {}).get("breakout", [])
+    return [(s, "NSE") for s in syms] if syms else _DEFAULT_WATCHLIST
 
 
 class BreakoutPod(BasePod):
@@ -69,7 +75,7 @@ class BreakoutPod(BasePod):
         self._in_trade: set[str] = set()
 
     def watchlist(self) -> list[tuple[str, str]]:
-        return _WATCHLIST
+        return _load_watchlist()
 
     async def generate_signal(self, quote: Quote) -> Optional[TradeSignal]:
         key = quote.symbol
@@ -98,6 +104,14 @@ class BreakoutPod(BasePod):
         # ATR for stop computation
         prices_list = list(self._prices[key])
         atr = self._compute_atr(prices_list, period=14)
+
+        # Skip if ATR is too small — expected gain won't cover brokerage + STT fees.
+        # Need at least 0.4% price move (e.g. ₹0.70 on a ₹175 stock) to be worthwhile.
+        min_atr = price * 0.004
+        if atr < min_atr:
+            log.debug("breakout.skip_low_volatility", symbol=key,
+                      atr=round(atr, 2), min_required=round(min_atr, 2))
+            return None
 
         if price > range_high and vol_ok:
             self._in_trade.add(key)

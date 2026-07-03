@@ -119,7 +119,7 @@ class PositionMonitor:
             hit = (quote.ltp >= pos.take_profit if pos.side == OrderSide.BUY
                    else quote.ltp <= pos.take_profit)
             if hit:
-                return f"Target hit: {quote.ltp} vs target {pos.take_profit}"
+                return f"Target hit: ₹{float(quote.ltp):.2f} vs target ₹{float(pos.take_profit):.2f}"
 
         if pos.max_hold_until and datetime.utcnow() >= pos.max_hold_until:
             return f"Max holding time reached ({pos.max_hold_until.date()})"

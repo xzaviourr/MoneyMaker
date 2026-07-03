@@ -39,7 +39,19 @@ class PortfolioGuardian:
     Escalation chain: ALERT → HEDGE → LIQUIDATE.
     """
 
+    _instance: "PortfolioGuardian | None" = None
+
+    @classmethod
+    def get(cls) -> "PortfolioGuardian":
+        if cls._instance is None:
+            raise RuntimeError(
+                "PortfolioGuardian not initialised. "
+                "Construct it with PortfolioGuardian(gateway=...) first."
+            )
+        return cls._instance
+
     def __init__(self, gateway: BrokerGateway) -> None:
+        PortfolioGuardian._instance = self
         self._gateway = gateway
         self._bus     = MessageBus.get()
 

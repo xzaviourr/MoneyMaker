@@ -4,7 +4,7 @@ Import `settings` anywhere; it's a singleton.
 """
 from __future__ import annotations
 
-import os
+import warnings
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
@@ -14,8 +14,15 @@ try:
 except ImportError:
     import tomli as tomllib  # type: ignore[no-reattr]
 
-from pydantic import Field
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
+
+
+_SENSITIVE_FIELDS = frozenset({
+    "azure_openai_api_key", "secret_key", "api_secret_key",
+    "five_paisa_password", "five_paisa_totp_secret", "five_paisa_password_key",
+    "five_paisa_encryption_key", "reddit_client_secret",
+})
 
 
 class Settings(BaseSettings):
@@ -23,12 +30,24 @@ class Settings(BaseSettings):
     env:           str   = "sandbox"
     log_level:     str   = "INFO"
     timezone:      str   = "Asia/Kolkata"
-    secret_key:    str   = "change_me"
+    secret_key:    str   = ""
+    api_secret_key: str  = ""
 
     # ── Azure OpenAI ──────────────────────────────────────────────────────
     azure_openai_api_key:   str = ""
     azure_openai_endpoint:  str = ""
     azure_openai_api_version: str = "2024-05-01-preview"
+
+    @field_validator("secret_key")
+    @classmethod
+    def secret_key_must_not_be_default(cls, v: str) -> str:
+        if v in ("", "change_me"):
+            warnings.warn(
+                "SECRET_KEY is not set or is the default 'change_me'. "
+                "Set SECRET_KEY in .env before going to production.",
+                stacklevel=2,
+            )
+        return v
 
     # ── Azure Key Vault (optional — one secret holds every credential below) ─
     azure_key_vault_url:         str = ""
@@ -59,6 +78,13 @@ class Settings(BaseSettings):
     # ── API ───────────────────────────────────────────────────────────────
     api_host: str = "0.0.0.0"
     api_port: int = 8000
+
+    def __repr__(self) -> str:
+        fields = self.model_dump()
+        for k in _SENSITIVE_FIELDS:
+            if fields.get(k):
+                fields[k] = "***"
+        return f"Settings({fields})"
 
     class Config:
         env_file = ".env"

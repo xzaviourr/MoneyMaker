@@ -44,6 +44,7 @@ if sys.platform == "win32":
         if hasattr(_stream, "reconfigure"):
             _stream.reconfigure(encoding="utf-8", errors="backslashreplace")
 
+import logging.handlers
 import structlog
 import uvicorn
 
@@ -74,8 +75,26 @@ from src.api.main import app
 from src.api.routes.pods import set_pod_supervisor
 from src.api.routes.feedback import set_feedback_system
 from src.api.routes.system import set_system_refs
+from src.pods.momentum_pod import make_momentum_pod
+from src.pods.breakout_pod import make_breakout_pod
+from src.pods.mean_reversion_pod import make_mean_reversion_pod
+from src.pods.event_pod import make_event_pod
 
 # ── Logging ────────────────────────────────────────────────────────────────────
+
+_SECRET_KEYS = frozenset({
+    "azure_openai_api_key", "api_key", "secret_key", "api_secret_key",
+    "password", "totp_secret", "password_key", "encryption_key",
+    "client_secret", "token", "authorization",
+})
+
+
+def _scrub_secrets(logger, method, event_dict):  # type: ignore[no-untyped-def]
+    for key in list(event_dict.keys()):
+        if any(s in key.lower() for s in ("key", "secret", "password", "token", "totp")):
+            event_dict[key] = "***"
+    return event_dict
+
 
 structlog.configure(
     processors=[
@@ -86,6 +105,7 @@ structlog.configure(
         structlog.processors.TimeStamper(fmt="iso"),
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
+        _scrub_secrets,
         structlog.processors.JSONRenderer(),
     ],
     wrapper_class=structlog.stdlib.BoundLogger,
@@ -93,7 +113,19 @@ structlog.configure(
     logger_factory=structlog.stdlib.LoggerFactory(),
     cache_logger_on_first_use=True,
 )
-logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+import os as _os
+_LOG_DIR = _os.path.join("data", "logs")
+_os.makedirs(_LOG_DIR, exist_ok=True)
+_file_handler = logging.handlers.RotatingFileHandler(
+    _os.path.join(_LOG_DIR, "moneymaker.log"),
+    maxBytes=10 * 1024 * 1024,  # 10 MB per file
+    backupCount=5,
+    encoding="utf-8",
+)
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[logging.StreamHandler(sys.stdout), _file_handler],
+)
 
 # Silence noisy third-party loggers
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
@@ -160,10 +192,6 @@ async def _register_pods(pod_supervisor: PodSupervisor, broker: BrokerGateway) -
     sizing computes to 0 and every signal silently gets skipped, no matter
     what the strategy or regime says."""
     from decimal import Decimal
-    from src.pods.momentum_pod import make_momentum_pod       # noqa: PLC0415
-    from src.pods.breakout_pod import make_breakout_pod       # noqa: PLC0415
-    from src.pods.mean_reversion_pod import make_mean_reversion_pod  # noqa: PLC0415
-    from src.pods.event_pod import make_event_pod             # noqa: PLC0415
 
     pods = [
         make_momentum_pod(broker),
@@ -173,7 +201,7 @@ async def _register_pods(pod_supervisor: PodSupervisor, broker: BrokerGateway) -
     ]
 
     capital = CapitalTracker.get()
-    per_pod_budget = Decimal("100000")  # 4 pods x ₹1,00,000 = the full ₹4,00,000 intraday pillar
+    per_pod_budget = Decimal(str(toml_cfg.get("pods", {}).get("per_pod_budget", 100_000)))
 
     classifier = RegimeClassifier.get()
     for pod in pods:
@@ -304,7 +332,19 @@ async def main(paper: bool = False, api_only: bool = False, demo: bool = False) 
     signal.signal(signal.SIGTERM, _shutdown)
 
     log.info("api.starting", host=host, port=port)
-    await server.serve()
+    try:
+        await server.serve()
+    finally:
+        log.info("moneymaker.shutting_down")
+        try:
+            await MessageBus.get().stop()
+        except Exception:
+            pass
+        try:
+            await BrokerGateway.get().disconnect()
+        except Exception:
+            pass
+        log.info("moneymaker.shutdown_complete")
 
 
 if __name__ == "__main__":

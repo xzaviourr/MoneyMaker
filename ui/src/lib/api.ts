@@ -1,7 +1,12 @@
 const BASE = '/api'
+const API_KEY = (import.meta.env.VITE_API_KEY as string | undefined) ?? ''
+
+function authHeaders(): Record<string, string> {
+  return API_KEY ? { 'X-Api-Key': API_KEY } : {}
+}
 
 export async function fetchJson<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`)
+  const res = await fetch(`${BASE}${path}`, { headers: authHeaders() })
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
   return res.json()
 }
@@ -9,7 +14,7 @@ export async function fetchJson<T>(path: string): Promise<T> {
 export async function postJson<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify(body),
   })
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)

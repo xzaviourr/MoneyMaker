@@ -91,8 +91,8 @@ async def _relay_to_clients(msg: Any) -> None:
             "ts":      ts.isoformat() if hasattr(ts, "isoformat") else str(datetime.utcnow()),
         }
         await manager.broadcast(json.dumps(payload, default=str))
-    except Exception:
-        pass
+    except Exception as exc:
+        log.warning("ws.relay_error", error=str(exc))
 
 
 async def _heartbeat_loop() -> None:
@@ -122,8 +122,8 @@ async def _heartbeat_loop() -> None:
                 },
             }
             await manager.broadcast(json.dumps(msg, default=str))
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("ws.heartbeat_error", error=str(exc))
 
 
 _heartbeat_task: asyncio.Task | None = None
@@ -132,7 +132,9 @@ _heartbeat_task: asyncio.Task | None = None
 @router.websocket("/ws/live")
 async def websocket_endpoint(ws: WebSocket) -> None:
     global _heartbeat_task
+    client_ip = ws.client.host if ws.client else "unknown"
     await manager.connect(ws)
+    log.info("ws.connected", ip=client_ip, total=manager.count)
     _setup_bus_subscriptions()
 
     # Start heartbeat loop once
@@ -155,5 +157,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                 await manager.send(ws, json.dumps({"type": "pong"}))
     except WebSocketDisconnect:
         manager.disconnect(ws)
-    except Exception:
+        log.info("ws.disconnected", ip=client_ip, reason="client_disconnect", total=manager.count)
+    except Exception as exc:
         manager.disconnect(ws)
+        log.warning("ws.disconnected", ip=client_ip, reason="error", error=str(exc), total=manager.count)

@@ -5,6 +5,7 @@ and normalises responses.
 """
 from __future__ import annotations
 
+import asyncio
 import structlog
 from datetime import datetime
 from decimal import Decimal
@@ -51,11 +52,13 @@ class BrokerGateway:
     # ── Lifecycle ──────────────────────────────────────────────────────────
 
     async def connect(self) -> None:
-        await self._broker.connect()
+        async with asyncio.timeout(30):
+            await self._broker.connect()
         log.info("gateway.connected", broker=self._broker.name)
 
     async def disconnect(self) -> None:
-        await self._broker.disconnect()
+        async with asyncio.timeout(10):
+            await self._broker.disconnect()
         log.info("gateway.disconnected", broker=self._broker.name)
 
     @property
@@ -69,18 +72,22 @@ class BrokerGateway:
     # ── Account ────────────────────────────────────────────────────────────
 
     async def get_balance(self) -> AccountBalance:
-        return await self._broker.get_balance()
+        async with asyncio.timeout(30):
+            return await self._broker.get_balance()
 
     async def get_positions(self) -> list[Position]:
-        return await self._broker.get_positions()
+        async with asyncio.timeout(30):
+            return await self._broker.get_positions()
 
     # ── Market data ────────────────────────────────────────────────────────
 
     async def get_quote(self, symbol: str, exchange: str) -> Quote:
-        return await self._broker.get_quote(symbol, exchange)
+        async with asyncio.timeout(10):
+            return await self._broker.get_quote(symbol, exchange)
 
     async def get_order_book(self, symbol: str, exchange: str) -> OrderBook:
-        return await self._broker.get_order_book(symbol, exchange)
+        async with asyncio.timeout(10):
+            return await self._broker.get_order_book(symbol, exchange)
 
     async def stream_quotes(
         self, symbols: list[tuple[str, str]], callback: QuoteCallback
@@ -94,7 +101,8 @@ class BrokerGateway:
             self._broker.add_symbols(callback, symbols)
 
     async def stop_stream(self) -> None:
-        await self._broker.stop_stream()
+        async with asyncio.timeout(10):
+            await self._broker.stop_stream()
 
     # ── Orders ─────────────────────────────────────────────────────────────
 
@@ -107,7 +115,8 @@ class BrokerGateway:
             type=order.order_type.value,
             pod=order.source_pod,
         )
-        result = await self._broker.place_order(order)
+        async with asyncio.timeout(15):
+            result = await self._broker.place_order(order)
         self._order_log.append({
             "order_id": order.id,
             "broker_order_id": result.broker_order_id,
@@ -132,11 +141,13 @@ class BrokerGateway:
 
     async def modify_order(self, broker_order_id: str, updates: dict) -> OrderResult:
         log.info("gateway.modify_order", broker_order_id=broker_order_id)
-        return await self._broker.modify_order(broker_order_id, updates)
+        async with asyncio.timeout(15):
+            return await self._broker.modify_order(broker_order_id, updates)
 
     async def cancel_order(self, broker_order_id: str) -> bool:
         log.info("gateway.cancel_order", broker_order_id=broker_order_id)
-        success = await self._broker.cancel_order(broker_order_id)
+        async with asyncio.timeout(15):
+            success = await self._broker.cancel_order(broker_order_id)
         if success:
             await self._bus.publish(
                 Message(
@@ -148,24 +159,29 @@ class BrokerGateway:
         return success
 
     async def get_order_status(self, broker_order_id: str) -> OrderResult:
-        return await self._broker.get_order_status(broker_order_id)
+        async with asyncio.timeout(15):
+            return await self._broker.get_order_status(broker_order_id)
 
     async def get_historical_data(
         self, symbol: str, exchange: str, interval: str, start: str, end: str
     ) -> list[dict]:
-        return await self._broker.get_historical_data(symbol, exchange, interval, start, end)
+        async with asyncio.timeout(60):
+            return await self._broker.get_historical_data(symbol, exchange, interval, start, end)
 
     async def get_trade_book(self) -> list[dict]:
-        return await self._broker.get_trade_book()
+        async with asyncio.timeout(30):
+            return await self._broker.get_trade_book()
 
     async def purge_position(self, symbol: str, exchange: str) -> Optional[Position]:
         if hasattr(self._broker, "purge_position"):
-            return await self._broker.purge_position(symbol, exchange)
+            async with asyncio.timeout(15):
+                return await self._broker.purge_position(symbol, exchange)
         return None
 
     async def mark_to_market(self) -> None:
         if hasattr(self._broker, "mark_to_market"):
-            await self._broker.mark_to_market()
+            async with asyncio.timeout(30):
+                await self._broker.mark_to_market()
 
     # ── Factory ────────────────────────────────────────────────────────────
 

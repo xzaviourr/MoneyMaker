@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { fetchJson, type Position } from '../lib/api'
 import { fmtInr, fmtPrice, fmt, cn } from '../lib/utils'
+
 import { useStore } from '../hooks/useStore'
 import { DebateModal } from '../components/DebateModal'
 
@@ -335,10 +336,10 @@ export default function PortfolioManagerPage() {
   const rationaleMap = Object.fromEntries(holdings.map(h => [h.symbol, h.rationale]))
 
   // summary stats
-  const totalPnl   = positions.reduce((s, p) => s + parseFloat(p.unrealized_pnl || '0'), 0)
-  const totalValue = positions.reduce((s, p) => s + parseFloat(p.average_price) * p.quantity, 0)
-  const winners    = positions.filter(p => parseFloat(p.unrealized_pnl || '0') > 0).length
-  const losers     = positions.filter(p => parseFloat(p.unrealized_pnl || '0') < 0).length
+  const totalPnl      = positions.reduce((s, p) => s + parseFloat(p.unrealized_pnl || '0'), 0)
+  const deployedCap   = positions.reduce((s, p) => s + p.quantity * parseFloat(p.average_price || '0'), 0)
+  const winners       = positions.filter(p => parseFloat(p.unrealized_pnl || '0') > 0).length
+  const losers        = positions.filter(p => parseFloat(p.unrealized_pnl || '0') < 0).length
 
   return (
     <div className="space-y-8">
@@ -366,16 +367,34 @@ export default function PortfolioManagerPage() {
             <div className="text-xs text-gray-500 mt-0.5">Unrealised P&L</div>
           </div>
           <div className="card py-3 text-center">
-            <div className="text-2xl font-bold font-mono text-white">{fmtInr(totalValue)}</div>
+            <div className="text-2xl font-bold font-mono text-white">
+              {fmtInr(deployedCap)}
+            </div>
             <div className="text-xs text-gray-500 mt-0.5">Capital Deployed</div>
           </div>
-          <div className="card py-3 text-center">
-            <div className="flex items-center justify-center gap-3">
-              <span className="text-2xl font-bold pnl-pos">{winners}W</span>
-              <span className="text-gray-600">/</span>
-              <span className="text-2xl font-bold pnl-neg">{losers}L</span>
-            </div>
-            <div className="text-xs text-gray-500 mt-0.5">Profit / Loss</div>
+          <div className="card py-3 text-center space-y-1.5">
+            {positions.length === 0 ? (
+              <div className="text-2xl font-bold text-gray-600">—</div>
+            ) : (
+              <>
+                <div className="text-2xl font-bold font-mono text-white">
+                  {positions.length > 0
+                    ? `${Math.round((winners / positions.length) * 100)}%`
+                    : '—'}
+                </div>
+                <div className="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-green-500 rounded-full"
+                    style={{ width: `${Math.round((winners / positions.length) * 100)}%` }}
+                  />
+                </div>
+                <div className="flex justify-between text-[10px] text-gray-500">
+                  <span className="text-green-400">{winners} up</span>
+                  <span className="text-red-400">{losers} down</span>
+                </div>
+              </>
+            )}
+            <div className="text-xs text-gray-500">Positions In Profit</div>
           </div>
         </div>
       </div>

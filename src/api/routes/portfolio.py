@@ -1,6 +1,7 @@
 """Portfolio routes — capital snapshot, positions, P&L."""
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from fastapi import APIRouter, HTTPException
 
@@ -9,6 +10,9 @@ from ...supervisor.capital_tracker import CapitalTracker
 from ...foundation.regime_classifier import RegimeClassifier
 
 router = APIRouter()
+
+_SYMBOL_RE   = re.compile(r"^[A-Z0-9&\-]{1,20}$")
+_EXCHANGE_RE = re.compile(r"^(NSE|BSE)$")
 
 
 @router.get("/cache-stats")
@@ -96,6 +100,10 @@ async def get_decisions() -> list[dict]:
 
 @router.delete("/positions/{symbol}/{exchange}")
 async def purge_bad_position(symbol: str, exchange: str) -> dict:
+    if not _SYMBOL_RE.match(symbol):
+        raise HTTPException(status_code=422, detail="Invalid symbol format")
+    if not _EXCHANGE_RE.match(exchange.upper()):
+        raise HTTPException(status_code=422, detail="Exchange must be NSE or BSE")
     """Admin cleanup — void a position that was opened on a fabricated/invalid
     price before validation existed (e.g. a hallucinated symbol). Not a sale;
     refunds the broker cash debited for it. Long-term-desk trades also reserve

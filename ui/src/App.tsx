@@ -1,10 +1,12 @@
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
 import { useLiveFeed } from './hooks/useLiveFeed'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import Dashboard from './pages/Dashboard'
 import PodsPage from './pages/Pods'
 import PositionsPage from './pages/Positions'
 import PortfolioManagerPage from './pages/PortfolioManager'
 import TradesPage from './pages/Trades'
+import ReportsPage from './pages/Reports'
 import DecisionsPage from './pages/Decisions'
 import FeedbackPage from './pages/Feedback'
 import SystemFlow from './pages/SystemFlow'
@@ -49,6 +51,7 @@ export default function App() {
             <NavItem to="/portfolio" label="Portfolio Manager"  />
             <NavItem to="/pods"      label="Pods"               />
             <NavItem to="/trades"    label="Trades"             />
+            <NavItem to="/reports"   label="Reports"            />
             <NavItem to="/decisions" label="Decisions"          />
             <NavItem to="/feedback"  label="Feedback"           />
             <NavItem to="/logs"      label="Logs"               />
@@ -61,17 +64,20 @@ export default function App() {
 
         {/* Page content */}
         <main className="flex-1 px-6 py-6">
-          <Routes>
-            <Route path="/"          element={<Dashboard />}            />
-            <Route path="/portfolio" element={<PortfolioManagerPage />}  />
-            <Route path="/positions" element={<PositionsPage />}         />
-            <Route path="/flow"      element={<SystemFlow />}            />
-            <Route path="/pods"      element={<PodsPage />}              />
-            <Route path="/trades"    element={<TradesPage />}            />
-            <Route path="/decisions" element={<DecisionsPage />}         />
-            <Route path="/feedback"  element={<FeedbackPage />}          />
-            <Route path="/logs"      element={<LogsPage />}              />
-          </Routes>
+          <ErrorBoundary>
+            <Routes>
+              <Route path="/"          element={<Dashboard />}            />
+              <Route path="/portfolio" element={<PortfolioManagerPage />}  />
+              <Route path="/positions" element={<PositionsPage />}         />
+              <Route path="/flow"      element={<SystemFlow />}            />
+              <Route path="/pods"      element={<PodsPage />}              />
+              <Route path="/trades"    element={<TradesPage />}            />
+              <Route path="/reports"   element={<ReportsPage />}           />
+              <Route path="/decisions" element={<DecisionsPage />}         />
+              <Route path="/feedback"  element={<FeedbackPage />}          />
+              <Route path="/logs"      element={<LogsPage />}              />
+            </Routes>
+          </ErrorBoundary>
         </main>
       </div>
     </BrowserRouter>

@@ -3,14 +3,27 @@ FlowTracker — records every message passing through the MessageBus.
 
 Used by the /system/graph endpoint to show live data lineage:
 which node sent what to whom, and when.
+
+Events are persisted to SQLite (data/flow_tracker.db) so the dashboard
+survives server restarts without losing history.
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from collections import deque
+from pathlib import Path
 from typing import Optional
 
+import aiosqlite
+import structlog
+
 from .schemas import Message
+
+log = structlog.get_logger(__name__)
+
+_DB_PATH = Path("data/flow_tracker.db")
+_KEEP_ROWS = 2_000  # rows kept in the DB before trimming
 
 
 class FlowTracker:
@@ -28,6 +41,62 @@ class FlowTracker:
         self._events: deque[dict] = deque(maxlen=500)
         self._last_by_type:   dict[str, dict] = {}
         self._last_by_source: dict[str, dict] = {}
+        self._lock = asyncio.Lock()
+        self._db_ready = False
+        # Bootstrap DB in the background; handle() works off the deque until it's ready.
+        asyncio.get_event_loop().call_soon(lambda: asyncio.create_task(self._init_db()))
+
+    # ── DB lifecycle ──────────────────────────────────────────────────────
+
+    async def _init_db(self) -> None:
+        try:
+            _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+            async with aiosqlite.connect(_DB_PATH) as db:
+                await db.execute("PRAGMA journal_mode=WAL")
+                await db.execute("""
+                    CREATE TABLE IF NOT EXISTS flow_events (
+                        id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                        ts      REAL    NOT NULL,
+                        type    TEXT    NOT NULL,
+                        source  TEXT    NOT NULL,
+                        payload TEXT    NOT NULL
+                    )
+                """)
+                await db.execute("CREATE INDEX IF NOT EXISTS idx_ts ON flow_events(ts)")
+                await db.commit()
+
+                # Load recent events into the in-memory deque on startup
+                async with db.execute(
+                    "SELECT ts, type, source, payload FROM flow_events ORDER BY ts DESC LIMIT 500"
+                ) as cursor:
+                    rows = await cursor.fetchall()
+                async with self._lock:
+                    for ts, typ, src, payload in reversed(rows):
+                        record = {"ts": ts, "type": typ, "source": src, "payload": payload}
+                        self._events.append(record)
+                        self._last_by_type[typ] = record
+                        self._last_by_source[src] = record
+
+            self._db_ready = True
+            log.info("flow_tracker.db_ready", path=str(_DB_PATH), loaded=len(rows))
+        except Exception as exc:
+            log.warning("flow_tracker.db_init_failed", error=str(exc))
+
+    async def _persist(self, record: dict) -> None:
+        try:
+            async with aiosqlite.connect(_DB_PATH) as db:
+                await db.execute(
+                    "INSERT INTO flow_events (ts, type, source, payload) VALUES (?,?,?,?)",
+                    (record["ts"], record["type"], record["source"], record["payload"]),
+                )
+                # Trim old rows so the DB doesn't grow unbounded
+                await db.execute(
+                    f"DELETE FROM flow_events WHERE id NOT IN "
+                    f"(SELECT id FROM flow_events ORDER BY ts DESC LIMIT {_KEEP_ROWS})"
+                )
+                await db.commit()
+        except Exception as exc:
+            log.warning("flow_tracker.persist_failed", error=str(exc))
 
     # ── Bus handler ───────────────────────────────────────────────────────
 
@@ -39,9 +108,13 @@ class FlowTracker:
             "source":  msg.source,
             "payload": _summarise(msg.payload),
         }
-        self._events.append(record)
-        self._last_by_type[msg.type.value]  = record
-        self._last_by_source[msg.source]    = record
+        async with self._lock:
+            self._events.append(record)
+            self._last_by_type[msg.type.value]  = record
+            self._last_by_source[msg.source]    = record
+
+        if self._db_ready:
+            asyncio.create_task(self._persist(record))
 
     # ── Queries ───────────────────────────────────────────────────────────
 

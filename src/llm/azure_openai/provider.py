@@ -4,12 +4,13 @@ Handles chat completions (all non-embedding tiers) and embeddings.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from typing import Any
 
 import structlog
-from openai import AsyncAzureOpenAI
+from openai import AsyncAzureOpenAI, RateLimitError, APIStatusError
 
 from ...shared.config import settings
 from ...shared.schemas import LLMRequest, LLMResponse, LLMTier
@@ -21,6 +22,8 @@ log = structlog.get_logger(__name__)
 
 # o1 / o1-mini do not support system messages or temperature != 1.0
 _O1_TIERS = {LLMTier.REASONING, LLMTier.DEEP}
+
+_RETRY_DELAYS = [1.0, 2.0, 4.0]  # 3 attempts with exponential backoff
 
 
 class AzureOpenAIProvider(BaseLLMProvider):
@@ -41,37 +44,55 @@ class AzureOpenAIProvider(BaseLLMProvider):
         deployment = get_deployment(request.tier)
         start = time.monotonic()
 
-        try:
-            if request.tier in _O1_TIERS:
-                # o1 models: merge system into user message, no temperature param
-                messages = [
-                    {"role": "user",
-                     "content": f"{request.system_prompt}\n\n{request.user_prompt}"}
-                ]
-                kwargs: dict[str, Any] = {
-                    "model": deployment,
-                    "messages": messages,
-                    "max_completion_tokens": request.max_tokens,
-                }
-            else:
-                messages = [
-                    {"role": "system", "content": request.system_prompt},
-                    {"role": "user",   "content": request.user_prompt},
-                ]
-                kwargs = {
-                    "model": deployment,
-                    "messages": messages,
-                    "max_tokens": request.max_tokens,
-                    "temperature": request.temperature,
-                }
-                if request.json_mode:
-                    kwargs["response_format"] = {"type": "json_object"}
+        if request.tier in _O1_TIERS:
+            messages: list[dict[str, Any]] = [
+                {"role": "user",
+                 "content": f"{request.system_prompt}\n\n{request.user_prompt}"}
+            ]
+            kwargs: dict[str, Any] = {
+                "model": deployment,
+                "messages": messages,
+                "max_completion_tokens": request.max_tokens,
+            }
+        else:
+            messages = [
+                {"role": "system", "content": request.system_prompt},
+                {"role": "user",   "content": request.user_prompt},
+            ]
+            kwargs = {
+                "model": deployment,
+                "messages": messages,
+                "max_tokens": request.max_tokens,
+                "temperature": request.temperature,
+            }
+            if request.json_mode:
+                kwargs["response_format"] = {"type": "json_object"}
 
-            response = await self._client.chat.completions.create(**kwargs)
-
-        except Exception as exc:
-            log.error("llm.completion_error", agent=request.agent_id, error=str(exc))
-            raise
+        last_exc: Exception | None = None
+        response = None
+        for attempt, delay in enumerate(_RETRY_DELAYS):
+            try:
+                response = await self._client.chat.completions.create(**kwargs)
+                break
+            except (RateLimitError, APIStatusError) as exc:
+                if attempt < len(_RETRY_DELAYS) - 1:
+                    log.warning(
+                        "llm.retrying",
+                        agent=request.agent_id,
+                        attempt=attempt + 1,
+                        delay=delay,
+                        error=str(exc),
+                    )
+                    await asyncio.sleep(delay)
+                    last_exc = exc
+                else:
+                    log.error("llm.completion_failed", agent=request.agent_id, error=str(exc))
+                    raise
+            except Exception as exc:
+                log.error("llm.completion_error", agent=request.agent_id, error=str(exc))
+                raise
+        if response is None:
+            raise last_exc  # type: ignore[misc]
 
         latency_ms = (time.monotonic() - start) * 1000
         usage = response.usage
