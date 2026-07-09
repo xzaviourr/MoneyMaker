@@ -127,7 +127,7 @@ async def get_system_graph() -> dict:
     )
 
     # ── News (Yahoo Finance + Indian financial RSS — all free, no API key) ───
-    from ...shared.rss_news import list_sources as _list_rss_sources
+    from ...feeds.rss_news import list_sources as _list_rss_sources
     news_logs = _get_db_logs(service="news", limit=5)
     news_fetch_logs = [l for l in news_logs if l["message"].startswith("Fetched")]
     news_age  = _age(news_logs[0]["ts"]) if news_logs else "never"
@@ -161,7 +161,7 @@ async def get_system_graph() -> dict:
     )
 
     # ── Reddit (sentiment feed — shared app, rate-limited deliberately) ─────
-    from ...shared.reddit_feed import rate_limit_status as _reddit_rate_status, list_subreddits as _list_subreddits
+    from ...feeds.reddit_feed import rate_limit_status as _reddit_rate_status, list_subreddits as _list_subreddits
     reddit_logs = _get_db_logs(service="reddit", limit=5)
     reddit_fetch_logs = [l for l in reddit_logs if l["message"].startswith("Fetched")]
     reddit_age  = _age(reddit_logs[0]["ts"]) if reddit_logs else "never"
@@ -534,7 +534,7 @@ async def get_system_graph() -> dict:
     queue_size = _lt_desk._aggregator.queue_size() if _lt_desk else 0
     universe_n = len(_lt_desk._universe) if _lt_desk else 0
 
-    from ...intelligence.explainability_ledger import ExplainabilityLedger
+    from ...audit.explainability_ledger import ExplainabilityLedger
     chair_decisions = await ExplainabilityLedger.get().query(agent_id="room1.committee_chair", limit=20)
     approved_recent = [d for d in chair_decisions if d.get("decision") in ("approve", "conditional")][:2]
     rejected_recent = [d for d in chair_decisions if d.get("decision") == "reject"][:2]

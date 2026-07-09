@@ -14,8 +14,8 @@ from typing import Any, Optional
 
 import structlog
 
-from .config import settings
-from .service_log import log_event
+from ..shared.config import settings
+from ..shared.service_log import log_event
 
 log = structlog.get_logger(__name__)
 

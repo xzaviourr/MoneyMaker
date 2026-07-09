@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchJson, postJson, type PodInfo } from '../lib/api'
 import { fmtInr, cn } from '../lib/utils'
+import { TableSkeleton } from '../components/Skeleton'
 
 const STATE_COLORS: Record<string, string> = {
   SANDBOX:   'bg-gray-700 text-gray-300',
@@ -39,14 +40,17 @@ function PodRow({ pod, onCommand }: { pod: PodInfo; onCommand: (id: string, acti
         <div className="flex gap-1">
           {pod.state !== 'PAUSED' && pod.state !== 'KILLED' && (
             <button className="btn-ghost text-xs px-2 py-1"
+              aria-label={`Pause ${pod.pod_id}`}
               onClick={() => onCommand(pod.pod_id, 'pause')}>Pause</button>
           )}
           {pod.state === 'PAUSED' && (
             <button className="btn-primary text-xs px-2 py-1"
+              aria-label={`Resume ${pod.pod_id}`}
               onClick={() => onCommand(pod.pod_id, 'resume')}>Resume</button>
           )}
           {pod.state !== 'KILLED' && (
             <button className="btn-danger text-xs px-2 py-1"
+              aria-label={`Kill ${pod.pod_id}`}
               onClick={() => onCommand(pod.pod_id, 'kill')}>Kill</button>
           )}
         </div>
@@ -71,7 +75,7 @@ export default function PodsPage() {
   return (
     <div className="space-y-4">
       <h1 className="text-xl font-semibold">Intraday Pods</h1>
-      {isLoading && <div className="text-gray-500 text-sm">Loading…</div>}
+      {isLoading && <TableSkeleton rows={4} cols={9} />}
       <div className="card overflow-x-auto p-0">
         <table className="w-full text-left">
           <thead>

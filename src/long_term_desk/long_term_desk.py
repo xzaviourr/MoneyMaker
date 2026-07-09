@@ -170,12 +170,87 @@ class LongTermDesk:
                  symbol=idea.symbol, conviction=idea.conviction_score)
 
         # ── Room 1 ────────────────────────────────────────────────────────
-        brief    = await self._scout.brief(idea)
-        bull     = await self._bull.argue(idea, brief)
-        bear     = await self._bear.argue(idea, brief, bull)
-        devil    = await self._devil.stress_test(idea, brief, bull, bear)
-        sector   = await self._sector.assess(idea, brief)
+        from ..audit.explainability_ledger import ExplainabilityLedger
+        ledger = ExplainabilityLedger.get()
+
+        brief = await self._scout.brief(idea)
+        await ledger.record(
+            agent_id="room1.opportunity_scout",
+            decision=brief.get("recommended_position_type", "swing"),
+            reasoning=brief.get("thesis_summary", ""),
+            symbol=idea.symbol,
+            inputs={"direction": idea.direction.value, "conviction": round(idea.conviction_score, 2)},
+            outputs={k: brief.get(k) for k in (
+                "thesis_summary", "bull_points", "bear_points",
+                "initial_conviction", "recommended_position_type", "data_gaps",
+            )},
+        )
+
+        bull = await self._bull.argue(idea, brief)
+        await ledger.record(
+            agent_id="room1.bull_advocate",
+            decision=f"+{bull.get('price_target_pct_upside', 0):.1f}%",
+            reasoning=bull.get("bull_case", ""),
+            symbol=idea.symbol,
+            inputs={"thesis": brief.get("thesis_summary", "")[:120]},
+            outputs={k: bull.get(k) for k in (
+                "price_target_pct_upside", "time_horizon_weeks",
+                "key_catalysts", "technical_support", "conviction_score",
+            )},
+        )
+
+        bear = await self._bear.argue(idea, brief, bull)
+        await ledger.record(
+            agent_id="room1.bear_advocate",
+            decision=f"-{bear.get('max_downside_pct', 0):.1f}%",
+            reasoning=bear.get("bear_case", ""),
+            symbol=idea.symbol,
+            inputs={"bull_target": bull.get("price_target_pct_upside", 0)},
+            outputs={k: bear.get(k) for k in (
+                "max_downside_pct", "key_risks",
+                "invalidation_scenario", "technical_resistance", "conviction_score",
+            )},
+        )
+
+        devil = await self._devil.stress_test(idea, brief, bull, bear)
+        await ledger.record(
+            agent_id="room1.devils_advocate",
+            decision=devil.get("go_no_go_lean", "conditional"),
+            reasoning="; ".join(filter(None, [devil.get("bull_flaw", ""), devil.get("bear_flaw", "")])),
+            symbol=idea.symbol,
+            inputs={},
+            outputs={k: devil.get(k) for k in (
+                "hidden_assumptions", "tail_risks", "liquidity_concerns",
+                "bull_flaw", "bear_flaw", "stress_test_score", "go_no_go_lean",
+            )},
+        )
+
+        sector = await self._sector.assess(idea, brief)
+        await ledger.record(
+            agent_id="room1.sector_specialist",
+            decision=sector.get("specialist_verdict", "neutral"),
+            reasoning=sector.get("peer_comparison", ""),
+            symbol=idea.symbol,
+            inputs={"sector": sector.get("sector", "")},
+            outputs={k: sector.get(k) for k in (
+                "sector", "specialist_verdict", "sector_rotation_signal",
+                "sector_conviction_modifier", "peer_comparison",
+            )},
+        )
+
         momentum = await self._momentum.assess(idea, brief, bull)
+        await ledger.record(
+            agent_id="room1.momentum_analyst",
+            decision=momentum.get("trend_quality", "neutral"),
+            reasoning=momentum.get("chart_pattern", ""),
+            symbol=idea.symbol,
+            inputs={},
+            outputs={k: momentum.get(k) for k in (
+                "trend_quality", "momentum_phase", "technical_score",
+                "momentum_conviction_modifier", "chart_pattern",
+            )},
+        )
+
         verdict: IdeaVerdict = await self._chair1.deliberate(
             idea, brief, bull, bear, devil, sector, momentum
         )
@@ -251,7 +326,7 @@ class LongTermDesk:
             await self._record_outcome(idea.symbol, f"NOT EXECUTED — {exec_plan.reason or exec_plan.status}")
 
     async def _record_outcome(self, symbol: str, outcome: str) -> None:
-        from ..intelligence.explainability_ledger import ExplainabilityLedger
+        from ..audit.explainability_ledger import ExplainabilityLedger
         try:
             await ExplainabilityLedger.get().update_outcome(symbol, "room1.committee_chair", outcome)
         except Exception:

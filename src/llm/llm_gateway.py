@@ -5,6 +5,7 @@ Logs every call to UsageTracker.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Optional
 
@@ -17,6 +18,8 @@ from .usage_tracker import UsageTracker
 
 log = structlog.get_logger(__name__)
 
+_MAX_CONCURRENT = 5  # max simultaneous Azure calls to avoid timeouts
+
 
 class LLMGateway:
     _instance: Optional["LLMGateway"] = None
@@ -24,6 +27,7 @@ class LLMGateway:
     def __init__(self, provider: BaseLLMProvider) -> None:
         self._provider = provider
         self._tracker = UsageTracker.get()
+        self._semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
 
     @classmethod
     def get(cls) -> "LLMGateway":
@@ -67,7 +71,8 @@ class LLMGateway:
             temperature=temperature if temperature is not None else cfg.temperature,
             json_mode=json_mode,
         )
-        response = await self._provider.complete(request)
+        async with self._semaphore:
+            response = await self._provider.complete(request)
         await self._record(response)
         return response.content
 

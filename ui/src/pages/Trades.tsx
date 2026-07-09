@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { fetchJson, type Trade } from '../lib/api'
 import { fmtInr, fmtPrice, cn } from '../lib/utils'
+import { TableSkeleton } from '../components/Skeleton'
+import { useStore } from '../hooks/useStore'
 
 // How long a position was actually held, from the original buy to this sell —
 // not shown anywhere before, since the trade book only stored the closing
@@ -19,6 +21,8 @@ function holdingDuration(entryTime: string | null, closeTime: string): string {
 }
 
 export default function TradesPage() {
+  const selectedSymbol    = useStore(s => s.selectedSymbol)
+  const setSelectedSymbol = useStore(s => s.setSelectedSymbol)
   const [sourceFilter, setSourceFilter] = useState('all')
   const { data: allTrades = [], isLoading } = useQuery<Trade[]>({
     queryKey: ['trades'],
@@ -54,7 +58,7 @@ export default function TradesPage() {
         </div>
       </div>
 
-      {isLoading && <div className="text-gray-500 text-sm">Loading…</div>}
+      {isLoading && <TableSkeleton rows={5} cols={6} />}
 
       <div className="card overflow-x-auto p-0">
         <table className="w-full text-left">
@@ -73,9 +77,21 @@ export default function TradesPage() {
           </thead>
           <tbody>
             {trades.map((t, i) => (
-              <tr key={t.trade_id ?? i} className="border-b border-gray-800 hover:bg-gray-900 transition-colors">
+              <tr key={t.trade_id ?? i} className={cn('border-b border-gray-800 hover:bg-gray-900 transition-colors', selectedSymbol === t.symbol && 'bg-brand-900/20')}>
                 <td className="px-4 py-3 text-xs text-gray-500 font-mono">{t.timestamp?.slice(0, 19).replace('T', ' ')}</td>
-                <td className="px-4 py-3 font-mono font-semibold text-sm">{t.symbol}</td>
+                <td className="px-4 py-3">
+                  <button
+                    onClick={() => setSelectedSymbol(selectedSymbol === t.symbol ? null : t.symbol)}
+                    className={cn(
+                      'font-mono font-semibold text-sm transition-colors text-left underline decoration-dotted underline-offset-2',
+                      selectedSymbol === t.symbol
+                        ? 'text-brand-500 decoration-brand-500'
+                        : 'text-white decoration-gray-600 hover:text-brand-400 hover:decoration-brand-400'
+                    )}
+                  >
+                    {t.symbol}
+                  </button>
+                </td>
                 <td className="px-4 py-3">
                   <span className={cn('badge', t.side === 'buy' ? 'bg-green-900 text-green-300' : 'bg-red-900 text-red-300')}>
                     {t.side.toUpperCase()}

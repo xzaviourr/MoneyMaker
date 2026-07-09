@@ -203,7 +203,15 @@ def download(
 
 
 def get_quote(symbol: str, exchange: str = "NSE") -> Optional[float]:
-    """Get last traded price with 1-minute cache."""
+    """Get last traded price with 1-minute cache.
+
+    Tries three methods in order so the system keeps running outside NSE
+    market hours (when fast_info.last_price returns None) and survives
+    yfinance API changes:
+      1. fast_info.last_price  — real-time tick when market is open
+      2. fast_info.previous_close — previous-day close (market closed)
+      3. yf.download 1d/1m last bar — most resilient fallback
+    """
     import yfinance as yf
 
     if not feature_toggles.is_enabled("yahoo_finance"):
@@ -212,7 +220,8 @@ def get_quote(symbol: str, exchange: str = "NSE") -> Optional[float]:
         return None
 
     suffix = ".NS" if exchange == "NSE" else ".BO"
-    key = f"quote:{symbol}{suffix}"
+    ticker_sym = f"{symbol}{suffix}"
+    key = f"quote:{ticker_sym}"
 
     cached = _get(key)
     if cached is not None:
@@ -220,20 +229,49 @@ def get_quote(symbol: str, exchange: str = "NSE") -> Optional[float]:
         return float(cached)
 
     try:
-        ticker = yf.Ticker(f"{symbol}{suffix}")
-        price  = ticker.fast_info.last_price
-        if price:
-            _set(key, float(price), _TTL["quote"])
-            log_event("yahoo_finance", "info", f"Fetched quote {symbol}{suffix}", {"price": price})
-            _note_fetch(f"Fetched quote {symbol}{suffix}")
-            return float(price)
-        log_event("yahoo_finance", "warning", f"No quote returned for {symbol}{suffix}")
+        ticker = yf.Ticker(ticker_sym)
+        fi     = ticker.fast_info
+
+        # Method 1: real-time last price (works only when market is open)
+        price = fi.last_price if hasattr(fi, "last_price") else None
+
+        # Method 2: previous close (works after market hours and on weekends)
+        if not price:
+            price = fi.previous_close if hasattr(fi, "previous_close") else None
+
+        # Method 3: download 1-day 1-minute bars and take last close
+        if not price:
+            import pandas as pd
+            df = yf.download(ticker_sym, period="5d", interval="1d",
+                             auto_adjust=True, progress=False)
+            if df is not None and not df.empty:
+                close_col = "Close"
+                # yfinance ≥0.2.38 may return multi-level columns for single ticker
+                if isinstance(df.columns, pd.MultiIndex):
+                    close_col = ("Close", ticker_sym)
+                last_row = df.iloc[-1]
+                price = float(last_row[close_col]) if close_col in last_row.index or (
+                    isinstance(df.columns, pd.MultiIndex) and close_col in df.columns
+                ) else None
+
+        if price and float(price) > 0:
+            price = float(price)
+            _set(key, price, _TTL["quote"])
+            log_event("yahoo_finance", "info", f"Fetched quote {ticker_sym}", {"price": price})
+            _note_fetch(f"Fetched quote {ticker_sym}")
+            return price
+
+        log.warning("market_cache.no_price", symbol=ticker_sym,
+                    msg="All three fetch methods returned None — market may be closed or Yahoo blocked")
+        log_event("yahoo_finance", "warning",
+                  f"No price from any method for {ticker_sym} — check yfinance or market hours")
         return None
     except Exception as exc:
         err = str(exc).lower()
-        if "401" in err or "unauthorized" in err:
+        if "401" in err or "unauthorized" in err or "too many" in err or "429" in err:
             _trigger_backoff()
-        log_event("yahoo_finance", "error", f"Quote fetch failed for {symbol}{suffix}", {"error": str(exc)})
+        log.warning("market_cache.quote_error", symbol=ticker_sym, error=str(exc))
+        log_event("yahoo_finance", "error", f"Quote fetch failed for {ticker_sym}", {"error": str(exc)})
         return None
 
 

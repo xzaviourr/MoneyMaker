@@ -5,7 +5,7 @@ from typing import Any
 
 import structlog
 
-from ...intelligence.explainability_ledger import ExplainabilityLedger
+from ...audit.explainability_ledger import ExplainabilityLedger
 from ...llm.llm_gateway import LLMGateway
 from ...shared.schemas import (
     AgentVote,

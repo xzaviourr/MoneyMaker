@@ -8,10 +8,12 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import json
 import re
 import time
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 import aiohttp
@@ -22,8 +24,8 @@ from ..shared import feature_toggles
 from ..shared.config import toml_cfg
 from ..shared.market_data_cache import get_news
 from ..shared.message_bus import MessageBus
-from ..shared.reddit_feed import fetch_subreddit_posts
-from ..shared.rss_news import fetch_all_feeds
+from ..feeds.reddit_feed import fetch_subreddit_posts
+from ..feeds.rss_news import fetch_all_feeds
 from ..shared.schemas import (
     GuardianAlert,
     GuardianResponseMode,
@@ -43,6 +45,8 @@ _SYNTHESIS_WINDOW_S      = 1200  # seconds — items older than this don't count
 _MAX_WATCHED_SYMBOLS     = 100   # cap on the dynamically-grown per-symbol news watchlist
 _MAX_PENDING_APPROVALS   = 20    # cap on outstanding "should we buy this?" prompts
 _APPROVAL_COOLDOWN_S     = 24 * 3600  # don't re-suggest the same symbol within 24h
+_SEEN_ARTICLES_PATH      = Path("data/news_seen_articles.json")
+_SEEN_ARTICLES_MAX       = 5000  # cap so the file doesn't grow forever
 
 # Company name → NSE symbol, so a market-wide RSS headline ("Reliance signs deal...")
 # can be attributed to a real, tradeable symbol instead of a generic "MARKET" tag.
@@ -168,7 +172,7 @@ class NewsWatchdog:
         # the same stock would queue three separate "buy this?" prompts, and
         # approving each one would mean buying the same stock again and again.
         self._approval_cooldown: dict[str, float] = {}
-        self._seen_articles: set[str] = set()
+        self._seen_articles: set[str] = self._load_seen_articles()
         self._seen_rss: set[str] = set()
         self._seen_reddit: set[str] = set()
         # The same real story often gets re-syndicated under a different URL/AMP
@@ -188,6 +192,24 @@ class NewsWatchdog:
         # name (an exchange, a private company) mentioned in a headline. This set
         # is the gate that catches that before it ever reaches the trading pipeline.
         self._valid_symbols: set[str] = set(_COMPANY_ALIASES.values())
+
+    def _load_seen_articles(self) -> set[str]:
+        try:
+            if _SEEN_ARTICLES_PATH.exists():
+                return set(json.loads(_SEEN_ARTICLES_PATH.read_text()))
+        except Exception:
+            pass
+        return set()
+
+    def _save_seen_articles(self) -> None:
+        try:
+            _SEEN_ARTICLES_PATH.parent.mkdir(parents=True, exist_ok=True)
+            items = list(self._seen_articles)[-_SEEN_ARTICLES_MAX:]
+            tmp = _SEEN_ARTICLES_PATH.with_suffix(".tmp")
+            tmp.write_text(json.dumps(items))
+            import os; os.replace(tmp, _SEEN_ARTICLES_PATH)
+        except Exception as exc:
+            log.debug("news_watchdog.seen_articles_save_failed", error=str(exc))
 
     def add_symbols(self, symbols: list[str]) -> None:
         for s in symbols:
@@ -437,6 +459,7 @@ class NewsWatchdog:
                 if not title or article_id in self._seen_articles:
                     continue
                 self._seen_articles.add(article_id)
+                self._save_seen_articles()
                 self._record_item(symbol, "yahoo_finance", title)
 
                 content = article.get("summary", "")

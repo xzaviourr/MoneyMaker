@@ -1,6 +1,7 @@
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { fetchJson, postJson, type FeedbackSummary } from '../lib/api'
 import { cn } from '../lib/utils'
+import { CardSkeleton } from '../components/Skeleton'
 
 interface StratStat {
   strategy:   string
@@ -39,7 +40,7 @@ export default function FeedbackPage() {
         </button>
       </div>
 
-      {isLoading && <div className="text-gray-500 text-sm">Loading…</div>}
+      {isLoading && <CardSkeleton lines={3} />}
 
       <div className="grid grid-cols-2 gap-6">
         {/* Strategy performance */}

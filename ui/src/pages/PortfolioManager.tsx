@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { fetchJson, type Position } from '../lib/api'
 import { fmtInr, fmtPrice, fmt, cn } from '../lib/utils'
+import { TableSkeleton } from '../components/Skeleton'
 
 import { useStore } from '../hooks/useStore'
 import { DebateModal } from '../components/DebateModal'
@@ -39,7 +40,8 @@ interface PMDecision {
 
 function fmtTs(iso: string | null | undefined): string {
   if (!iso) return '—'
-  return new Date(iso).toLocaleString('en-IN', {
+  const utc = iso.endsWith('Z') ? iso : iso + 'Z'
+  return new Date(utc).toLocaleString('en-IN', {
     day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
   })
 }
@@ -425,7 +427,7 @@ export default function PortfolioManagerPage() {
           <span className="ml-2 text-xs font-normal text-gray-500">auto-refreshes every 10s</span>
         </h2>
 
-        {isLoading && <div className="text-gray-500 text-sm">Loading…</div>}
+        {isLoading && <TableSkeleton rows={4} cols={7} />}
         {!isLoading && positions.length === 0 && (
           <div className="card text-center text-gray-600 py-12">No open positions</div>
         )}

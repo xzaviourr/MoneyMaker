@@ -48,7 +48,9 @@ def estimate_trade_cost(
     trade_value = price * Decimal(str(quantity))
 
     # ── Brokerage ──────────────────────────────────────────────────────────
-    brokerage = min(_BROKERAGE_FLAT, trade_value * _BROKERAGE_MAX_PCT)
+    # Paper broker charges flat ₹20 per order regardless of trade size.
+    # For live trading (5Paisa/Zerodha) the cap kicks in on large orders.
+    brokerage = _BROKERAGE_FLAT
 
     # ── STT ────────────────────────────────────────────────────────────────
     if exchange == Exchange.NFO:
@@ -128,7 +130,8 @@ def trade_has_edge(
     price: Decimal,
     is_intraday: bool = True,
 ) -> bool:
-    """Returns True only when expected edge > total estimated cost."""
+    """Returns True only when expected edge > round-trip estimated cost.
+    Entry + exit both cost money, so breakeven requires 2× the one-way cost."""
     estimate = estimate_trade_cost(
         symbol=order.symbol,
         exchange=order.exchange,
@@ -137,4 +140,5 @@ def trade_has_edge(
         order_type=order.order_type,
         is_intraday=is_intraday,
     )
-    return expected_edge_pct > estimate.breakeven_move_pct
+    round_trip_breakeven = estimate.breakeven_move_pct * 2
+    return expected_edge_pct > round_trip_breakeven
