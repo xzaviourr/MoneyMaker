@@ -70,6 +70,7 @@ class BasePod(ABC):
         ))
         self._is_paused  = False
         self._signal_cooldown: dict[str, datetime] = {}  # symbol -> retry-after, set on order rejection
+        self._orders_in_flight: set[str] = set()  # symbols with an order currently being placed
         self._task: Optional[asyncio.Task] = None  # type: ignore[type-arg]
         self._metrics    = PodMetrics(pod_id=self.pod_id)
         self._regime_classifier: Optional[RegimeClassifier] = None
@@ -257,20 +258,20 @@ class BasePod(ABC):
         if cooldown_until and datetime.utcnow() < cooldown_until:
             return
 
-        # Already holding a position from this same signal — let it ride to its
-        # stop/target/time-exit instead of re-buying/re-selling into it every tick
-        # the entry condition still holds (was firing several fills a second).
+        # Already holding a position, or an order is mid-flight — skip to prevent
+        # a concurrent signal from firing while place_order is awaited.
         key = f"{signal.symbol}_{signal.exchange.value}"
-        if key in self._positions:
+        if key in self._positions or key in self._orders_in_flight:
             return
 
         # Risk: check daily drawdown limit
         if not self._risk_check(signal, quote):
             return
 
-        # Cost check: is edge > total cost?
+        # Cost check: is edge > total round-trip cost with a 1.5× safety margin?
+        # conviction * 3 means even a min-conviction signal must cover 1.5× the breakeven.
         if not trade_has_edge(
-            expected_edge_pct=float(signal.conviction * 2),
+            expected_edge_pct=float(signal.conviction * 3),
             order=Order(
                 symbol=signal.symbol,
                 exchange=signal.exchange,
@@ -339,6 +340,7 @@ class BasePod(ABC):
         if not tp_price and side == OrderSide.BUY:
             tp_price = quote.ltp * Decimal(str(1 + self.config.take_profit_pct / 100))
 
+        key = f"{signal.symbol}_{signal.exchange.value}"
         order = Order(
             symbol=signal.symbol,
             exchange=signal.exchange,
@@ -354,7 +356,11 @@ class BasePod(ABC):
             rationale=signal.rationale,
         )
 
-        result = await self._gateway.place_order(order)
+        self._orders_in_flight.add(key)
+        try:
+            result = await self._gateway.place_order(order)
+        finally:
+            self._orders_in_flight.discard(key)
         if not result.average_fill_price:
             # e.g. "Insufficient funds" — the pod's own budget check passed but the
             # shared account balance is too low; don't hammer the broker every tick.
@@ -389,7 +395,7 @@ class BasePod(ABC):
                 price=str(result.average_fill_price),
             )
 
-            from ..intelligence.explainability_ledger import ExplainabilityLedger
+            from ..audit.explainability_ledger import ExplainabilityLedger
             await ExplainabilityLedger.get().record(
                 agent_id=self.pod_id,
                 decision=side.value,
@@ -471,7 +477,7 @@ class BasePod(ABC):
                 reason=reason,
                 pnl=str(realized_pnl),
             )
-            from ..intelligence.explainability_ledger import ExplainabilityLedger
+            from ..audit.explainability_ledger import ExplainabilityLedger
             await ExplainabilityLedger.get().record(
                 agent_id=self.pod_id,
                 decision=order.side.value,

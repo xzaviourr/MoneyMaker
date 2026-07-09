@@ -135,13 +135,23 @@ class PositionMonitor:
         return None
 
     def _compute_stop(self, pos: Position, high_water: Decimal) -> Decimal:
-        """Returns the effective stop price (hard SL or trailing, whichever is tighter)."""
+        """Returns the effective stop price (hard SL or trailing, whichever is tighter).
+
+        Trailing stop only activates once the position is at least 1% profitable —
+        prevents normal intraday noise (0.5-0.8% swings) from triggering exits before
+        the trade has had a chance to develop.
+        """
         hard_sl = pos.stop_loss or (
             pos.average_price * Decimal(str(1 - self._default_sl_pct / 100))
         )
         if pos.trailing_stop_pct:
-            trailing_sl = high_water * Decimal(str(1 - pos.trailing_stop_pct / 100))
-            return max(hard_sl, trailing_sl) if pos.side == OrderSide.BUY else min(hard_sl, trailing_sl)
+            activation_price = pos.average_price * Decimal("1.01") if pos.side == OrderSide.BUY \
+                else pos.average_price * Decimal("0.99")
+            trail_activated = (high_water >= activation_price) if pos.side == OrderSide.BUY \
+                else (high_water <= activation_price)
+            if trail_activated:
+                trailing_sl = high_water * Decimal(str(1 - pos.trailing_stop_pct / 100))
+                return max(hard_sl, trailing_sl) if pos.side == OrderSide.BUY else min(hard_sl, trailing_sl)
         return hard_sl
 
     async def _exit_position(self, pos: Position, quote: Quote, reason: str) -> None:
@@ -167,7 +177,7 @@ class PositionMonitor:
                 fill_price=str(result.average_fill_price),
                 pnl=str(pnl) if pnl is not None else None,
             )
-            from ..intelligence.explainability_ledger import ExplainabilityLedger
+            from ..audit.explainability_ledger import ExplainabilityLedger
             await ExplainabilityLedger.get().record(
                 agent_id="position_monitor",
                 decision="sell" if pos.side == OrderSide.BUY else "buy",

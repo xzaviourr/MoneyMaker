@@ -53,7 +53,7 @@ class BreakoutPod(BasePod):
         gateway: BrokerGateway,
         lookback: int = 20,
         volume_multiplier: float = 1.8,
-        atr_stop_mult: float = 1.5,
+        atr_stop_mult: float = 2.0,
     ) -> None:
         config = PodConfig(
             pod_id="breakout_pod",
@@ -72,7 +72,6 @@ class BreakoutPod(BasePod):
         self._highs:  dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=lookback))
         self._lows:   dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=lookback))
         self._vols:   dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=25))
-        self._in_trade: set[str] = set()
 
     def watchlist(self) -> list[tuple[str, str]]:
         return _load_watchlist()
@@ -92,8 +91,10 @@ class BreakoutPod(BasePod):
         if len(self._prices[key]) < self._lookback:
             return None
 
-        # Already in a trade for this symbol
-        if key in self._in_trade:
+        # Already in a trade for this symbol — check live positions so re-entry
+        # is possible after a position closes (unlike _in_trade which never cleared)
+        pos_key = f"{quote.symbol}_{quote.exchange.value}"
+        if pos_key in self._positions:
             return None
 
         range_high = max(list(self._highs[key])[:-1])
@@ -114,7 +115,6 @@ class BreakoutPod(BasePod):
             return None
 
         if price > range_high and vol_ok:
-            self._in_trade.add(key)
             conviction = min(0.85, 0.5 + (price - range_high) / range_high * 100 * 0.1)
             return TradeSignal(
                 symbol=quote.symbol,
@@ -131,7 +131,6 @@ class BreakoutPod(BasePod):
                 rationale=f"Breakout above {range_high:.2f}, vol={vol/avg_vol:.1f}x",
             )
         if price < range_low and vol_ok:
-            self._in_trade.add(key)
             conviction = min(0.85, 0.5 + (range_low - price) / range_low * 100 * 0.1)
             return TradeSignal(
                 symbol=quote.symbol,

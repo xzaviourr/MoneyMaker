@@ -1,4 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+
+function useDarkMode() {
+  const [dark, setDark] = useState(() => document.documentElement.classList.contains('dark'))
+  useEffect(() => {
+    const obs = new MutationObserver(() => setDark(document.documentElement.classList.contains('dark')))
+    obs.observe(document.documentElement, { attributeFilter: ['class'] })
+    return () => obs.disconnect()
+  }, [])
+  return dark
+}
 import {
   ReactFlow,
   Background,
@@ -140,10 +150,18 @@ interface GraphData {
 
 // ── Status palette ─────────────────────────────────────────────────────────────
 
-const S = {
-  ok:    { dot: '#22c55e', border: '#166534', bg: '#020f06' },
-  warn:  { dot: '#eab308', border: '#713f12', bg: '#0d0800' },
-  error: { dot: '#ef4444', border: '#7f1d1d', bg: '#0d0000' },
+function getS(isDark: boolean) {
+  return isDark
+    ? {
+        ok:    { dot: '#22c55e', border: '#166534', bg: '#020f06' },
+        warn:  { dot: '#eab308', border: '#713f12', bg: '#0d0800' },
+        error: { dot: '#ef4444', border: '#7f1d1d', bg: '#0d0000' },
+      }
+    : {
+        ok:    { dot: '#16a34a', border: '#bbf7d0', bg: '#f0fdf4' },
+        warn:  { dot: '#ca8a04', border: '#fde68a', bg: '#fefce8' },
+        error: { dot: '#dc2626', border: '#fecaca', bg: '#fff5f5' },
+      }
 }
 
 const ICON: Record<string, string> = {
@@ -153,9 +171,11 @@ const ICON: Record<string, string> = {
 // ── Node card ─────────────────────────────────────────────────────────────────
 
 function SystemNode({ data }: NodeProps) {
-  const d   = data as unknown as GraphNode
-  const pal = S[d.status as keyof typeof S] ?? S.warn
-  const isPod = d.type === 'pod'
+  const isDark = useDarkMode()
+  const S      = getS(isDark)
+  const d      = data as unknown as GraphNode
+  const pal    = S[d.status as keyof typeof S] ?? S.warn
+  const isPod  = d.type === 'pod'
 
   // "Active" here means this node actually saw traffic recently — distinct
   // from health status (ok/warn/error), which can be green even if idle.
@@ -167,7 +187,7 @@ function SystemNode({ data }: NodeProps) {
   const isLive = recentSecs.length > 0 && Math.min(...recentSecs) < LIVE_WINDOW_SECONDS
 
   const sectionStyle: React.CSSProperties = {
-    borderTop: '1px solid #1e293b',
+    borderTop: `1px solid ${isDark ? '#1e293b' : '#e2e8f0'}`,
     paddingTop: 5,
     marginTop: 5,
   }
@@ -175,7 +195,7 @@ function SystemNode({ data }: NodeProps) {
     fontSize: 8,
     textTransform: 'uppercase',
     letterSpacing: '0.08em',
-    color: '#475569',
+    color: isDark ? '#475569' : '#94a3b8',
     marginBottom: 3,
   }
   const rowStyle: React.CSSProperties = {
@@ -196,7 +216,7 @@ function SystemNode({ data }: NodeProps) {
       minWidth: 200,
       maxWidth: 260,
       fontFamily: 'monospace',
-      color: '#cbd5e1',
+      color: isDark ? '#cbd5e1' : '#1e293b',
       boxShadow: `0 0 14px ${pal.dot}18`,
       opacity: isLive ? 1 : 0.55,
       transition: 'opacity 0.4s',
@@ -207,7 +227,7 @@ function SystemNode({ data }: NodeProps) {
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
         <span style={{ fontSize: 14 }}>{ICON[d.type as string] ?? '●'}</span>
-        <span style={{ fontWeight: 700, color: '#f1f5f9', fontSize: 12, flex: 1 }}>{String(d.label)}</span>
+        <span style={{ fontWeight: 700, color: isDark ? '#f1f5f9' : '#0f172a', fontSize: 12, flex: 1 }}>{String(d.label)}</span>
         {isLive && (
           <span style={{ fontSize: 8, color: pal.dot, fontWeight: 700, letterSpacing: '0.05em' }}>LIVE</span>
         )}
@@ -228,9 +248,9 @@ function SystemNode({ data }: NodeProps) {
             <div key={i} style={rowStyle}>
               <span style={{ color: '#3b82f6', fontSize: 9 }}>←</span>
               <div>
-                <span style={{ color: '#64748b' }}>{inp.label}</span>
-                {inp.value && <span style={{ color: '#94a3b8' }}> · {inp.value}</span>}
-                <span style={{ color: '#334155', fontSize: 9 }}> ({inp.age})</span>
+                <span style={{ color: isDark ? '#64748b' : '#475569' }}>{inp.label}</span>
+                {inp.value && <span style={{ color: isDark ? '#94a3b8' : '#64748b' }}> · {inp.value}</span>}
+                <span style={{ color: isDark ? '#334155' : '#94a3b8', fontSize: 9 }}> ({inp.age})</span>
               </div>
             </div>
           ))}
@@ -240,11 +260,11 @@ function SystemNode({ data }: NodeProps) {
       {/* STATE */}
       <div style={sectionStyle}>
         <div style={labelStyle}>◈ NOW</div>
-        <div style={{ color: '#64748b', fontWeight: 600, fontSize: 10, marginBottom: 3 }}>
+        <div style={{ color: isDark ? '#64748b' : '#475569', fontWeight: 600, fontSize: 10, marginBottom: 3 }}>
           {(d.state as FlowState).title}
         </div>
         {(d.state as FlowState).lines.slice(0, isPod ? 4 : 5).map((line, i) => (
-          <div key={i} style={{ fontSize: 9.5, color: '#475569', lineHeight: 1.5 }}>{line}</div>
+          <div key={i} style={{ fontSize: 9.5, color: isDark ? '#475569' : '#374155', lineHeight: 1.5 }}>{line}</div>
         ))}
       </div>
 
@@ -256,9 +276,9 @@ function SystemNode({ data }: NodeProps) {
             <div key={i} style={rowStyle}>
               <span style={{ color: '#22c55e', fontSize: 9 }}>→</span>
               <div>
-                <span style={{ color: '#64748b' }}>{out.label}</span>
-                {out.value && <span style={{ color: '#94a3b8' }}> · {out.value}</span>}
-                <span style={{ color: '#334155', fontSize: 9 }}> ({out.age})</span>
+                <span style={{ color: isDark ? '#64748b' : '#475569' }}>{out.label}</span>
+                {out.value && <span style={{ color: isDark ? '#94a3b8' : '#64748b' }}> · {out.value}</span>}
+                <span style={{ color: isDark ? '#334155' : '#94a3b8', fontSize: 9 }}> ({out.age})</span>
               </div>
             </div>
           ))}
@@ -342,16 +362,16 @@ function buildFlowNodes(apiNodes: GraphNode[]): Node[] {
   }))
 }
 
-function buildFlowEdges(apiEdges: GraphEdge[]): Edge[] {
+function buildFlowEdges(apiEdges: GraphEdge[], isDark: boolean): Edge[] {
   return apiEdges.map(e => ({
     id:           e.id,
     source:       e.source,
     target:       e.target,
     label:        e.label,
     animated:     true,
-    style:        { stroke: '#1e3a5f', strokeWidth: 1.5 },
-    labelStyle:   { fill: '#475569', fontSize: 9, fontFamily: 'monospace' },
-    labelBgStyle: { fill: '#020817', fillOpacity: 0.9 },
+    style:        { stroke: isDark ? '#1e3a5f' : '#94a3b8', strokeWidth: 1.5 },
+    labelStyle:   { fill: isDark ? '#475569' : '#374155', fontSize: 9, fontFamily: 'monospace' },
+    labelBgStyle: { fill: isDark ? '#020817' : '#f8fafc', fillOpacity: 0.9 },
     type:         'smoothstep',
   }))
 }
@@ -366,6 +386,8 @@ function fmtUptime(s: number) {
 interface Props { height?: string }
 
 export default function SystemFlow({ height = 'calc(100vh - 100px)' }: Props) {
+  const isDark = useDarkMode()
+  const S      = getS(isDark)
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([])
 
   // Persist a node's new position the moment a drag finishes, so the next
@@ -423,7 +445,7 @@ export default function SystemFlow({ height = 'calc(100vh - 100px)' }: Props) {
   useEffect(() => {
     if (!graph) return
     setNodes(buildFlowNodes(graph.nodes))
-    setEdges(buildFlowEdges(graph.edges))
+    setEdges(buildFlowEdges(graph.edges, isDark))
   }, [graph, setNodes, setEdges])
 
   // On every real event from the bus, light up the exact edge(s) it just
@@ -498,7 +520,7 @@ export default function SystemFlow({ height = 'calc(100vh - 100px)' }: Props) {
       <div style={{ display: 'flex', flex: 1, gap: 10, minHeight: 0 }}>
 
         {/* React Flow */}
-        <div style={{ flex: 1, borderRadius: 10, overflow: 'hidden', border: '1px solid #1e293b' }}>
+        <div style={{ flex: 1, borderRadius: 10, overflow: 'hidden', border: `1px solid ${isDark ? '#1e293b' : '#e2e8f0'}` }}>
           <ReactFlow
             nodes={displayNodes} edges={displayEdges}
             onNodesChange={onNodesChangePersisted} onEdgesChange={onEdgesChange}
@@ -508,25 +530,25 @@ export default function SystemFlow({ height = 'calc(100vh - 100px)' }: Props) {
             minZoom={0.3} maxZoom={1.5}
             panOnScroll panOnScrollSpeed={0.8}
             zoomOnScroll={false} zoomOnPinch
-            style={{ background: '#020817' }}
+            style={{ background: isDark ? '#020817' : '#f8fafc' }}
             proOptions={{ hideAttribution: true }}
           >
-            <Background color="#0f172a" gap={24} size={1} />
+            <Background color={isDark ? '#0f172a' : '#e2e8f0'} gap={24} size={1} />
             <style>{CONTROLS_CSS}</style>
-            <Controls style={{ background: '#0f172a', border: '1px solid #1e293b' }} />
+            <Controls style={{ background: isDark ? '#0f172a' : '#ffffff', border: `1px solid ${isDark ? '#1e293b' : '#e2e8f0'}` }} />
             <MiniMap
-              style={{ background: '#0f172a', border: '1px solid #1e293b', height: 90 }}
+              style={{ background: isDark ? '#0f172a' : '#ffffff', border: `1px solid ${isDark ? '#1e293b' : '#e2e8f0'}`, height: 90 }}
               nodeColor={(n: Node) => S[(n.data as unknown as GraphNode)?.status as keyof typeof S]?.dot ?? '#475569'}
-              maskColor="rgba(2,8,23,0.75)"
+              maskColor={isDark ? 'rgba(2,8,23,0.75)' : 'rgba(248,250,252,0.75)'}
             />
           </ReactFlow>
         </div>
 
         {/* Detail panel */}
         <div style={{
-          width: 280, background: '#0a0f1a', border: '1px solid #1e293b',
+          width: 280, background: isDark ? '#0a0f1a' : '#ffffff', border: `1px solid ${isDark ? '#1e293b' : '#e2e8f0'}`,
           borderRadius: 10, padding: 14, fontSize: 11, fontFamily: 'monospace',
-          color: '#64748b', overflowY: 'auto', flexShrink: 0,
+          color: isDark ? '#64748b' : '#334155', overflowY: 'auto', flexShrink: 0,
           display: 'flex', flexDirection: 'column', gap: 12,
         }}>
           {selected ? (
@@ -538,7 +560,7 @@ export default function SystemFlow({ height = 'calc(100vh - 100px)' }: Props) {
                   background: S[selected.status as keyof typeof S]?.dot,
                   boxShadow: `0 0 8px ${S[selected.status as keyof typeof S]?.dot}`,
                 }} />
-                <span style={{ fontWeight: 700, color: '#f1f5f9', fontSize: 13 }}>{String(selected.label)}</span>
+                <span style={{ fontWeight: 700, color: isDark ? '#f1f5f9' : '#0f172a', fontSize: 13 }}>{String(selected.label)}</span>
               </div>
 
               {/* Long-Term Desk reasoning — its own highlighted block, not
@@ -548,10 +570,10 @@ export default function SystemFlow({ height = 'calc(100vh - 100px)' }: Props) {
                 const feed = (selected.reasoning_feed as ReasoningItem[] | undefined) ?? []
                 return (
                   <div style={{
-                    border: '1px solid #1e40af', borderRadius: 8, padding: 10,
-                    background: '#0a1230', display: 'flex', flexDirection: 'column', gap: 8,
+                    border: `1px solid ${isDark ? '#1e40af' : '#bfdbfe'}`, borderRadius: 8, padding: 10,
+                    background: isDark ? '#0a1230' : '#eff6ff', display: 'flex', flexDirection: 'column', gap: 8,
                   }}>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: '#60a5fa', letterSpacing: '0.05em' }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: isDark ? '#60a5fa' : '#1d4ed8', letterSpacing: '0.05em' }}>
                       💬 WHY IT BUYS / REJECTS — latest debate verdicts
                     </div>
                     {feed.length === 0 && (
@@ -565,7 +587,7 @@ export default function SystemFlow({ height = 'calc(100vh - 100px)' }: Props) {
                           paddingLeft: 8,
                         }}>
                           <div style={{ display: 'flex', gap: 6, alignItems: 'baseline', marginBottom: 2 }}>
-                            <span style={{ fontWeight: 700, color: '#e2e8f0', fontSize: 11 }}>{item.symbol}</span>
+                            <span style={{ fontWeight: 700, color: isDark ? '#e2e8f0' : '#0f172a', fontSize: 11 }}>{item.symbol}</span>
                             <span style={{
                               fontSize: 9, fontWeight: 700, textTransform: 'uppercase',
                               color: rejected ? '#ef4444' : '#22c55e',
@@ -573,7 +595,7 @@ export default function SystemFlow({ height = 'calc(100vh - 100px)' }: Props) {
                               {item.decision}
                             </span>
                           </div>
-                          <div style={{ color: '#94a3b8', fontSize: 10, lineHeight: 1.5 }}>
+                          <div style={{ color: isDark ? '#94a3b8' : '#475569', fontSize: 10, lineHeight: 1.5 }}>
                             {item.reasoning}
                           </div>
                           {/* The action that actually resulted — bought or not,
@@ -605,10 +627,10 @@ export default function SystemFlow({ height = 'calc(100vh - 100px)' }: Props) {
                 return (
                   <>
                     <div style={{
-                      border: '1px solid #1e40af', borderRadius: 8, padding: 10,
-                      background: '#0a1230', display: 'flex', flexDirection: 'column', gap: 8,
+                      border: `1px solid ${isDark ? '#1e40af' : '#bfdbfe'}`, borderRadius: 8, padding: 10,
+                      background: isDark ? '#0a1230' : '#eff6ff', display: 'flex', flexDirection: 'column', gap: 8,
                     }}>
-                      <div style={{ fontSize: 10, fontWeight: 700, color: '#60a5fa', letterSpacing: '0.05em' }}>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: isDark ? '#60a5fa' : '#1d4ed8', letterSpacing: '0.05em' }}>
                         📰 NEWS GISTS — buy / avoid / watch, per headline
                       </div>
                       {gists.length === 0 && (
@@ -633,10 +655,10 @@ export default function SystemFlow({ height = 'calc(100vh - 100px)' }: Props) {
                     </div>
 
                     <div style={{
-                      border: '1px solid #1e293b', borderRadius: 8, padding: 10,
-                      background: '#0a0f1a', display: 'flex', flexDirection: 'column', gap: 8,
+                      border: `1px solid ${isDark ? '#1e293b' : '#e2e8f0'}`, borderRadius: 8, padding: 10,
+                      background: isDark ? '#0a0f1a' : '#f8fafc', display: 'flex', flexDirection: 'column', gap: 8,
                     }}>
-                      <div style={{ fontSize: 10, fontWeight: 700, color: '#94a3b8', letterSpacing: '0.05em' }}>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: isDark ? '#94a3b8' : '#64748b', letterSpacing: '0.05em' }}>
                         🔎 CROSS-SOURCE MATCHES — 2+ sources, same story
                       </div>
                       {matches.length === 0 && (
@@ -730,7 +752,7 @@ export default function SystemFlow({ height = 'calc(100vh - 100px)' }: Props) {
                       </div>
                       {openLogId === row.id && row.details && (
                         <pre style={{
-                          fontSize: 9, color: '#475569', background: '#020817',
+                          fontSize: 9, color: isDark ? '#475569' : '#334155', background: isDark ? '#020817' : '#f1f5f9',
                           borderRadius: 6, padding: 6, marginTop: 4, overflowX: 'auto',
                         }}>
                           {JSON.stringify(row.details, null, 2)}

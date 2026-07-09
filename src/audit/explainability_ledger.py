@@ -24,12 +24,20 @@ class ExplainabilityLedger:
     """Write-once append log for agent decisions."""
 
     _instance: Optional["ExplainabilityLedger"] = None
+    _mode: str = "paper"
 
     def __init__(self) -> None:
         _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(_DB_PATH), check_same_thread=False)
         self._lock = asyncio.Lock()
         self._init_schema()
+
+    @classmethod
+    def init(cls, mode: str) -> "ExplainabilityLedger":
+        cls._mode = mode
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
 
     @classmethod
     def get(cls) -> "ExplainabilityLedger":
@@ -48,9 +56,14 @@ class ExplainabilityLedger:
                 reasoning   TEXT,
                 inputs      TEXT,
                 outputs     TEXT,
-                outcome     TEXT
+                outcome     TEXT,
+                mode        TEXT    NOT NULL DEFAULT 'demo'
             )
         """)
+        try:
+            self._conn.execute("ALTER TABLE decision_log ADD COLUMN mode TEXT NOT NULL DEFAULT 'demo'")
+        except sqlite3.OperationalError:
+            pass
         self._conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_symbol ON decision_log(symbol)
         """)
@@ -80,8 +93,8 @@ class ExplainabilityLedger:
                      symbol: Optional[str]) -> None:
         self._conn.execute("""
             INSERT INTO decision_log
-                (event_ts, agent_id, symbol, decision, reasoning, inputs, outputs)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (event_ts, agent_id, symbol, decision, reasoning, inputs, outputs, mode)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             datetime.utcnow().isoformat(),
             agent_id,
@@ -90,6 +103,7 @@ class ExplainabilityLedger:
             reasoning,
             json.dumps(inputs or {}),
             json.dumps(outputs or {}),
+            ExplainabilityLedger._mode,
         ))
         self._conn.commit()
 
@@ -112,17 +126,18 @@ class ExplainabilityLedger:
         self,
         symbol:   Optional[str] = None,
         agent_id: Optional[str] = None,
+        mode:     Optional[str] = None,
         limit:    int = 50,
     ) -> list[dict[str, Any]]:
         async with self._lock:
             rows = await asyncio.get_event_loop().run_in_executor(
                 None,
-                lambda: self._query_sync(symbol, agent_id, limit)
+                lambda: self._query_sync(symbol, agent_id, mode, limit)
             )
         return rows
 
     def _query_sync(self, symbol: Optional[str], agent_id: Optional[str],
-                    limit: int) -> list[dict[str, Any]]:
+                    mode: Optional[str], limit: int) -> list[dict[str, Any]]:
         conditions = []
         params: list[Any] = []
         if symbol:
@@ -131,13 +146,16 @@ class ExplainabilityLedger:
         if agent_id:
             conditions.append("agent_id LIKE ?")
             params.append(f"%{agent_id}%")
+        if mode:
+            conditions.append("mode=?")
+            params.append(mode)
         where = "WHERE " + " AND ".join(conditions) if conditions else ""
         params.append(limit)
         rows = self._conn.execute(f"""
-            SELECT event_ts, agent_id, symbol, decision, reasoning, inputs, outputs, outcome
+            SELECT event_ts, agent_id, symbol, decision, reasoning, inputs, outputs, outcome, mode
             FROM decision_log {where}
             ORDER BY event_ts DESC LIMIT ?
         """, params).fetchall()
         cols = ["event_ts", "agent_id", "symbol", "decision",
-                "reasoning", "inputs", "outputs", "outcome"]
+                "reasoning", "inputs", "outputs", "outcome", "mode"]
         return [dict(zip(cols, r)) for r in rows]

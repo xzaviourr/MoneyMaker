@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { fetchJson, type ServiceLog } from '../lib/api'
 import { cn } from '../lib/utils'
+import { TableSkeleton } from '../components/Skeleton'
 
 const TABS: { key: string; label: string }[] = [
   { key: 'yahoo_finance', label: 'Yahoo Finance' },
@@ -42,7 +43,7 @@ export default function LogsPage() {
         ))}
       </div>
 
-      {isLoading && <div className="text-gray-500 text-sm">Loading…</div>}
+      {isLoading && <TableSkeleton rows={6} cols={4} />}
 
       <div className="space-y-1">
         {rows.map(r => (

@@ -25,7 +25,6 @@ from ..shared.market_data_cache import get_quote
 from ..shared.message_bus import MessageBus
 from ..shared.schemas import (
     Exchange,
-    LLMRequest,
     LLMTier,
     Message,
     MessageType,
@@ -82,7 +81,7 @@ class PortfolioManager:
     async def start(self) -> None:
         self._bus.subscribe(MessageType.ORDER_FILLED, self._on_order_filled)
         self._bus.subscribe(MessageType.NEWS_SIGNAL,  self._on_news_signal)
-        await self._hydrate_from_broker()
+        asyncio.create_task(self._hydrate_from_broker())  # non-blocking; runs while rest of boot continues
         self._task = asyncio.create_task(self._sl_tp_loop())
         log.info("portfolio_manager.started")
 
@@ -117,12 +116,19 @@ class PortfolioManager:
         try:
             broker    = BrokerGateway.get()
             positions = await broker.get_positions()
+
+            # Bulk-fetch rationales for all symbols in one query to avoid
+            # 22 sequential lock acquisitions on the ExplainabilityLedger.
+            symbols = list({pos.symbol for pos in positions})
+            rationale_map: dict[str, str] = {}
+            if symbols:
+                rationale_map = await self._fetch_rationales_bulk(symbols)
+
             added = 0
             for pos in positions:
                 key = pos.id
                 if key in self._holdings:
                     continue
-                rationale = await self._fetch_rationale(pos.symbol)
                 record = HoldingRecord(
                     order_id    = key,
                     symbol      = pos.symbol,
@@ -132,7 +138,7 @@ class PortfolioManager:
                     entry_ts    = pos.opened_at.isoformat() if pos.opened_at else datetime.utcnow().isoformat(),
                     stop_loss   = float(pos.stop_loss)   if pos.stop_loss   else None,
                     take_profit = float(pos.take_profit) if pos.take_profit else None,
-                    rationale   = rationale,
+                    rationale   = rationale_map.get(pos.symbol, ""),
                     source      = pos.source_pod or pos.source_desk or "unknown",
                     strategy    = pos.strategy or "unknown",
                 )
@@ -142,24 +148,27 @@ class PortfolioManager:
         except Exception as exc:
             log.warning("portfolio_manager.hydration_failed", error=str(exc))
 
-    async def _fetch_rationale(self, symbol: str) -> str:
-        """Look up the Room 1 committee's reasoning for this symbol from the ExplainabilityLedger.
-        Prefer the entry whose outcome records an actual BOUGHT fill."""
+    async def _fetch_rationales_bulk(self, symbols: list[str]) -> dict[str, str]:
+        """Single ledger query for all symbols; avoids per-symbol lock contention on boot."""
         try:
-            from ..intelligence.explainability_ledger import ExplainabilityLedger
-            rows = await ExplainabilityLedger.get().query(symbol=symbol, agent_id="committee_chair", limit=20)
-            if not rows:
-                return ""
-            # prefer the row whose outcome records a buy fill
+            from ..audit.explainability_ledger import ExplainabilityLedger
+            rows = await ExplainabilityLedger.get().query(agent_id="committee_chair", limit=500)
+            result: dict[str, str] = {}
             for row in rows:
+                sym = row.get("symbol", "")
+                if sym not in symbols or sym in result:
+                    continue
                 outcome = (row.get("outcome") or "").upper()
-                if "BOUGHT" in outcome or "EXECUTED" in outcome and "NOT" not in outcome:
-                    return row.get("reasoning", "")
-            # fallback: return the most recent reasoning regardless of outcome
-            return rows[0].get("reasoning", "")
+                if "BOUGHT" in outcome or ("EXECUTED" in outcome and "NOT" not in outcome):
+                    result[sym] = row.get("reasoning", "")
+            # fill any symbol still missing with the most-recent reasoning
+            for row in rows:
+                sym = row.get("symbol", "")
+                if sym in symbols and sym not in result:
+                    result[sym] = row.get("reasoning", "")
+            return result
         except Exception:
-            pass
-        return ""
+            return {}
 
     # ── Bus handlers ───────────────────────────────────────────────────────────
 
@@ -248,17 +257,16 @@ class PortfolioManager:
         )
 
         try:
-            req = LLMRequest(
+            raw      = await LLMGateway.get().complete(
                 agent_id      = "portfolio_manager",
-                tier          = LLMTier.FAST,
                 system_prompt = _SYSTEM_PROMPT,
                 user_prompt   = user_prompt,
+                tier          = LLMTier.FAST,
                 max_tokens    = 256,
                 temperature   = 0.0,
                 json_mode     = True,
             )
-            resp     = await LLMGateway.get().complete(req)
-            decision = json.loads(resp.content)
+            decision = json.loads(raw)
         except Exception as exc:
             log.warning("portfolio_manager.llm_error", error=str(exc))
             return

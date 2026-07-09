@@ -3,17 +3,182 @@
 @tailwind utilities;
 
 @layer base {
-  body { @apply font-sans antialiased; }
+  body { @apply font-sans antialiased bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-gray-100; }
   code { @apply font-mono; }
 }
 
 @layer components {
-  .card   { @apply bg-gray-900 rounded-xl border border-gray-800 p-4; }
+  .card   { @apply bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-4; }
   .badge  { @apply inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium; }
   .btn    { @apply inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors; }
   .btn-primary { @apply btn bg-brand-500 text-white hover:bg-brand-600; }
   .btn-danger  { @apply btn bg-danger-500 text-white hover:bg-danger-600; }
-  .btn-ghost   { @apply btn bg-transparent border border-gray-700 hover:bg-gray-800; }
-  .pnl-pos { @apply text-green-400; }
-  .pnl-neg { @apply text-red-400; }
+  .btn-ghost   { @apply btn bg-transparent border border-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800; }
+  .pnl-pos { @apply text-green-600 dark:text-green-400; }
+  .pnl-neg { @apply text-red-600 dark:text-red-400; }
 }
+
+/* ── Light mode: remap every dark-design token to a readable light equivalent ── */
+html:not(.dark) { color-scheme: light; }
+
+html:not(.dark) .bg-gray-950  { background-color: #f8fafc !important; }
+html:not(.dark) .bg-gray-900  { background-color: #ffffff !important; }
+html:not(.dark) .bg-gray-800  { background-color: #f1f5f9 !important; }
+html:not(.dark) .bg-gray-700  { background-color: #e2e8f0 !important; }
+
+html:not(.dark) .border-gray-900 { border-color: #e2e8f0 !important; }
+html:not(.dark) .border-gray-800 { border-color: #e2e8f0 !important; }
+html:not(.dark) .border-gray-700 { border-color: #cbd5e1 !important; }
+
+html:not(.dark) .text-white    { color: #0f172a !important; }
+html:not(.dark) .text-gray-100 { color: #0f172a !important; }
+html:not(.dark) .text-gray-200 { color: #1e293b !important; }
+html:not(.dark) .text-gray-300 { color: #334155 !important; }
+html:not(.dark) .text-gray-400 { color: #475569 !important; }
+html:not(.dark) .text-gray-500 { color: #64748b !important; }
+html:not(.dark) .text-gray-600 { color: #475569 !important; }
+html:not(.dark) .text-gray-700 { color: #334155 !important; }
+
+html:not(.dark) .hover\:bg-gray-900:hover { background-color: #f1f5f9 !important; }
+html:not(.dark) .hover\:bg-gray-800:hover { background-color: #e2e8f0 !important; }
+html:not(.dark) .hover\:text-white:hover   { color: #0f172a !important; }
+
+/* table rows */
+html:not(.dark) .divide-gray-800 > * { border-color: #e2e8f0 !important; }
+html:not(.dark) .divide-gray-700 > * { border-color: #cbd5e1 !important; }
+
+/* dark panel variants used in debate / cards */
+html:not(.dark) .bg-gray-900\/60  { background-color: rgba(255,255,255,0.9) !important; }
+html:not(.dark) .bg-gray-900\/40  { background-color: rgba(241,245,249,0.8) !important; }
+html:not(.dark) .bg-gray-900\/30  { background-color: rgba(241,245,249,0.6) !important; }
+html:not(.dark) .bg-gray-800\/60  { background-color: rgba(226,232,240,0.8) !important; }
+html:not(.dark) .bg-gray-800\/80  { background-color: rgba(226,232,240,0.9) !important; }
+
+/* brand pill in nav */
+html:not(.dark) .bg-brand-900\/40 { background-color: #dcfce7 !important; }
+html:not(.dark) .border-brand-500\/40 { border-color: #22c55e !important; }
+
+/* ── Reports / hardcoded dark hex backgrounds ─────────────────────────── */
+html:not(.dark) .bg-\[\#090d13\]     { background-color: #f8fafc !important; }
+html:not(.dark) .bg-\[\#0d1117\]     { background-color: #ffffff !important; }
+html:not(.dark) .bg-\[\#0a0f18\]     { background-color: #f1f5f9 !important; }
+html:not(.dark) .bg-\[\#0b1120\]\/96 { background-color: rgba(248,250,252,0.97) !important; }
+
+/* white-opacity borders → visible slate borders in light mode */
+html:not(.dark) .border-white\/\[0\.04\] { border-color: #e8ecf2 !important; }
+html:not(.dark) .border-white\/\[0\.05\] { border-color: #e2e8f0 !important; }
+html:not(.dark) .border-white\/\[0\.06\] { border-color: #d8dfe9 !important; }
+html:not(.dark) .border-white\/\[0\.07\] { border-color: #ced7e4 !important; }
+html:not(.dark) .border-white\/\[0\.08\] { border-color: #c5cfde !important; }
+html:not(.dark) .border-white\/\[0\.10\] { border-color: #b8c4d4 !important; }
+
+/* white-opacity fills → light fills */
+html:not(.dark) .bg-white\/\[0\.02\]              { background-color: #f5f7fb !important; }
+html:not(.dark) .bg-white\/\[0\.04\]              { background-color: #edf0f6 !important; }
+html:not(.dark) .bg-white\/\[0\.06\]              { background-color: #e4e9f2 !important; }
+html:not(.dark) .hover\:bg-white\/\[0\.02\]:hover { background-color: #edf0f6 !important; }
+html:not(.dark) .hover\:bg-white\/\[0\.06\]:hover { background-color: #e4e9f2 !important; }
+
+/* green / red text — darken so they read on white backgrounds */
+html:not(.dark) .text-green-400 { color: #15803d !important; }
+html:not(.dark) .text-green-500 { color: #16a34a !important; }
+html:not(.dark) .text-green-600 { color: #15803d !important; }
+html:not(.dark) .text-green-700 { color: #166534 !important; }
+html:not(.dark) .text-green-800 { color: #14532d !important; }
+html:not(.dark) .text-red-400   { color: #b91c1c !important; }
+html:not(.dark) .text-red-500   { color: #dc2626 !important; }
+html:not(.dark) .text-red-600   { color: #b91c1c !important; }
+html:not(.dark) .text-red-700   { color: #991b1b !important; }
+html:not(.dark) .text-red-800   { color: #7f1d1d !important; }
+html:not(.dark) .text-blue-500  { color: #2563eb !important; }
+html:not(.dark) .text-blue-600  { color: #1d4ed8 !important; }
+
+/* React Flow controls — override the dark CONTROLS_CSS injected by SystemFlow */
+html:not(.dark) .react-flow__controls-button {
+  background: #ffffff !important;
+  border-bottom: 1px solid #e2e8f0 !important;
+}
+html:not(.dark) .react-flow__controls-button:hover { background: #f1f5f9 !important; }
+html:not(.dark) .react-flow__controls-button svg   { fill: #475569 !important; }
+
+/* ── Colored badge / pill backgrounds (status badges on every page) ── */
+html:not(.dark) .bg-yellow-900      { background-color: #fef9c3 !important; }
+html:not(.dark) .bg-yellow-900\/60  { background-color: rgba(254,249,195,0.9) !important; }
+html:not(.dark) .bg-yellow-900\/40  { background-color: rgba(254,249,195,0.7) !important; }
+html:not(.dark) .bg-red-900         { background-color: #fee2e2 !important; }
+html:not(.dark) .bg-red-900\/60     { background-color: rgba(254,226,226,0.9) !important; }
+html:not(.dark) .bg-red-900\/50     { background-color: rgba(254,226,226,0.8) !important; }
+html:not(.dark) .bg-green-900       { background-color: #dcfce7 !important; }
+html:not(.dark) .bg-green-900\/60   { background-color: rgba(220,252,231,0.9) !important; }
+html:not(.dark) .bg-green-900\/50   { background-color: rgba(220,252,231,0.8) !important; }
+html:not(.dark) .bg-blue-900        { background-color: #dbeafe !important; }
+html:not(.dark) .bg-blue-900\/60    { background-color: rgba(219,234,254,0.9) !important; }
+html:not(.dark) .bg-blue-900\/50    { background-color: rgba(219,234,254,0.8) !important; }
+html:not(.dark) .bg-orange-900      { background-color: #ffedd5 !important; }
+html:not(.dark) .bg-orange-900\/60  { background-color: rgba(255,237,213,0.9) !important; }
+html:not(.dark) .bg-purple-900      { background-color: #f3e8ff !important; }
+html:not(.dark) .bg-purple-900\/50  { background-color: rgba(243,232,255,0.8) !important; }
+
+/* dark -950 panel backgrounds used in card borders / tinted panels */
+html:not(.dark) .bg-yellow-950\/80  { background-color: rgba(254,249,195,0.95) !important; }
+html:not(.dark) .bg-yellow-950\/20  { background-color: rgba(254,252,232,0.8) !important; }
+html:not(.dark) .bg-yellow-950\/10  { background-color: rgba(254,252,232,0.6) !important; }
+html:not(.dark) .bg-red-950\/30     { background-color: rgba(255,241,242,0.8) !important; }
+html:not(.dark) .bg-red-950\/10     { background-color: rgba(255,241,242,0.6) !important; }
+html:not(.dark) .bg-green-950\/20   { background-color: rgba(240,253,244,0.8) !important; }
+html:not(.dark) .bg-green-950\/10   { background-color: rgba(240,253,244,0.6) !important; }
+html:not(.dark) .bg-blue-950\/60    { background-color: rgba(239,246,255,0.9) !important; }
+html:not(.dark) .bg-blue-950\/20    { background-color: rgba(239,246,255,0.7) !important; }
+html:not(.dark) .bg-blue-950\/10    { background-color: rgba(239,246,255,0.6) !important; }
+html:not(.dark) .bg-purple-950\/10  { background-color: rgba(250,245,255,0.7) !important; }
+html:not(.dark) .bg-cyan-950\/10    { background-color: rgba(236,254,255,0.6) !important; }
+html:not(.dark) .bg-teal-950\/10    { background-color: rgba(240,253,250,0.6) !important; }
+html:not(.dark) .bg-indigo-950\/10  { background-color: rgba(238,242,255,0.6) !important; }
+html:not(.dark) .bg-orange-950\/10  { background-color: rgba(255,247,237,0.6) !important; }
+html:not(.dark) .bg-pink-950\/10    { background-color: rgba(253,242,248,0.6) !important; }
+
+/* gray opacity variants not yet covered */
+html:not(.dark) .bg-gray-800\/50    { background-color: rgba(241,245,249,0.7) !important; }
+html:not(.dark) .bg-black\/30       { background-color: rgba(226,232,240,0.8) !important; }
+
+/* ── Colored border variants ── */
+html:not(.dark) .border-yellow-700\/60 { border-color: rgba(161,98,7,0.5) !important; }
+html:not(.dark) .border-yellow-800     { border-color: #92400e !important; }
+html:not(.dark) .border-yellow-800\/50 { border-color: rgba(146,64,14,0.5) !important; }
+html:not(.dark) .border-yellow-900\/50 { border-color: rgba(120,53,15,0.4) !important; }
+html:not(.dark) .border-red-800        { border-color: #991b1b !important; }
+html:not(.dark) .border-red-900\/50    { border-color: rgba(127,29,29,0.4) !important; }
+html:not(.dark) .border-red-900\/60    { border-color: rgba(127,29,29,0.5) !important; }
+html:not(.dark) .border-green-800      { border-color: #166534 !important; }
+html:not(.dark) .border-green-900\/60  { border-color: rgba(20,83,45,0.5) !important; }
+html:not(.dark) .border-green-900\/40  { border-color: rgba(20,83,45,0.35) !important; }
+html:not(.dark) .border-blue-800       { border-color: #1e3a8a !important; }
+html:not(.dark) .border-blue-900\/30   { border-color: rgba(30,58,138,0.3) !important; }
+html:not(.dark) .border-blue-900\/50   { border-color: rgba(30,58,138,0.4) !important; }
+html:not(.dark) .border-orange-800     { border-color: #9a3412 !important; }
+html:not(.dark) .border-purple-800\/50 { border-color: rgba(88,28,135,0.5) !important; }
+html:not(.dark) .border-purple-900\/50 { border-color: rgba(88,28,135,0.4) !important; }
+html:not(.dark) .border-gray-800\/60   { border-color: rgba(226,232,240,0.9) !important; }
+
+/* ── Colored text — -300/-400 chip/badge text reads on white without override ── */
+html:not(.dark) .text-yellow-300  { color: #92400e !important; }
+html:not(.dark) .text-yellow-400  { color: #b45309 !important; }
+html:not(.dark) .text-yellow-200\/70 { color: rgba(92,40,6,0.9) !important; }
+html:not(.dark) .text-red-300     { color: #991b1b !important; }
+html:not(.dark) .text-green-300   { color: #166534 !important; }
+html:not(.dark) .text-blue-300    { color: #1e3a8a !important; }
+html:not(.dark) .text-blue-400    { color: #1d4ed8 !important; }
+html:not(.dark) .text-orange-300  { color: #9a3412 !important; }
+html:not(.dark) .text-orange-400  { color: #c2410c !important; }
+html:not(.dark) .text-purple-300  { color: #6b21a8 !important; }
+html:not(.dark) .text-purple-400  { color: #7c3aed !important; }
+html:not(.dark) .text-purple-500  { color: #7c3aed !important; }
+html:not(.dark) .text-cyan-400    { color: #0e7490 !important; }
+html:not(.dark) .text-teal-400    { color: #0f766e !important; }
+html:not(.dark) .text-indigo-400  { color: #4338ca !important; }
+html:not(.dark) .text-pink-400    { color: #be185d !important; }
+html:not(.dark) .text-emerald-400 { color: #065f46 !important; }
+
+/* hover variants for colored text used in buttons/links */
+html:not(.dark) .hover\:text-purple-300:hover { color: #6b21a8 !important; }
+html:not(.dark) .hover\:text-white:hover      { color: #0f172a !important; }

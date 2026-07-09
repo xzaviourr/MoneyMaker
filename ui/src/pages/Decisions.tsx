@@ -1,14 +1,17 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { fetchJson, type Decision, type Trade } from '../lib/api'
 import { fmtPrice, cn } from '../lib/utils'
 import { DebateModal } from '../components/DebateModal'
+import { TableSkeleton } from '../components/Skeleton'
+import { useStore } from '../hooks/useStore'
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 function fmtTs(iso: string | null | undefined) {
   if (!iso) return '—'
-  return new Date(iso).toLocaleString('en-IN', {
+  const utc = iso.endsWith('Z') ? iso : iso + 'Z'
+  return new Date(utc).toLocaleString('en-IN', {
     day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
   })
 }
@@ -82,8 +85,22 @@ function agentCardStyle(color: string): string {
 
 // ── decision card ─────────────────────────────────────────────────────────────
 
+function ModeBadge({ mode }: { mode?: string }) {
+  if (!mode) return null
+  return (
+    <span className={cn(
+      'text-[9px] font-bold uppercase px-1.5 py-0.5 rounded border tracking-wide',
+      mode === 'demo'
+        ? 'bg-yellow-900/40 text-yellow-400 border-yellow-800/50'
+        : 'bg-brand-900/40 text-brand-400 border-brand-800/50',
+    )}>
+      {mode}
+    </span>
+  )
+}
+
 function DecisionCard({ d, expanded, onToggle, onViewDebate }: {
-  d: Decision
+  d: Decision & { mode?: string }
   expanded: boolean
   onToggle: () => void
   onViewDebate: (symbol: string) => void
@@ -133,6 +150,7 @@ function DecisionCard({ d, expanded, onToggle, onViewDebate }: {
               </span>
             )}
             <OutcomeBadge outcome={d.outcome} />
+            <ModeBadge mode={(d as any).mode} />
           </div>
 
           {/* one-line preview when collapsed */}
@@ -260,17 +278,24 @@ function TradeRow({ t, onViewDebate }: { t: Trade; onViewDebate: (s: string) => 
 // ── page ──────────────────────────────────────────────────────────────────────
 
 export default function DecisionsPage() {
+  const selectedSymbol = useStore(s => s.selectedSymbol)
   const [symbol,       setSymbol]       = useState('')
-  const [tab,          setTab]          = useState<'all' | 'debate' | 'trades'>('all')
+  const [mode,         setMode]         = useState<'all' | 'demo' | 'paper'>('all')
+  const [tab,          setTab]          = useState<'all' | 'debate' | 'trades'>('debate')
   const [expanded,     setExpanded]     = useState<Set<number>>(new Set())
   const [debateSymbol, setDebateSymbol] = useState<string | null>(null)
 
+  useEffect(() => {
+    if (selectedSymbol) setSymbol(selectedSymbol)
+  }, [selectedSymbol])
+
   const params = new URLSearchParams()
   if (symbol) params.set('symbol', symbol)
+  if (mode !== 'all') params.set('mode', mode)
   params.set('limit', '200')
 
   const { data: decisions = [], isLoading: dLoading } = useQuery<Decision[]>({
-    queryKey:        ['decisions', symbol],
+    queryKey:        ['decisions', symbol, mode],
     queryFn:         () => fetchJson(`/decisions/?${params}`),
     refetchInterval: 30_000,
   })
@@ -315,9 +340,26 @@ export default function DecisionsPage() {
         <input
           className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white placeholder:text-gray-600 focus:outline-none focus:border-brand-500 w-44"
           placeholder="Filter by symbol…"
+          autoComplete="off"
           value={symbol}
           onChange={e => setSymbol(e.target.value.toUpperCase())}
         />
+
+        {/* mode filter */}
+        <div className="flex rounded-lg overflow-hidden border border-gray-700 text-sm">
+          {(['paper', 'demo', 'all'] as const).map(m => (
+            <button
+              key={m}
+              onClick={() => setMode(m)}
+              className={cn(
+                'px-3 py-1.5 font-medium',
+                mode === m ? (m === 'demo' ? 'bg-yellow-600 text-white' : m === 'paper' ? 'bg-brand-500 text-white' : 'bg-gray-600 text-white') : 'bg-gray-900 text-gray-400 hover:text-white',
+              )}
+            >
+              {m === 'paper' ? 'Paper (Real AI)' : m === 'demo' ? 'Demo (Fake AI)' : 'All'}
+            </button>
+          ))}
+        </div>
 
         <div className="flex rounded-lg overflow-hidden border border-gray-700 text-sm">
           {(['all', 'debate', 'trades'] as const).map(t => (
@@ -346,7 +388,7 @@ export default function DecisionsPage() {
       {tab === 'trades' && (
         <div className="space-y-2">
           <div className="text-sm text-gray-500 mb-2">{filteredTrades.length} trades</div>
-          {(dLoading || tLoading) && <div className="text-gray-500 text-sm">Loading…</div>}
+          {(dLoading || tLoading) && <TableSkeleton rows={4} cols={5} />}
           {filteredTrades.map((t, i) => <TradeRow key={i} t={t} onViewDebate={setDebateSymbol} />)}
           {!tLoading && filteredTrades.length === 0 && (
             <div className="card text-center text-gray-600 py-8">No trades yet</div>
@@ -360,7 +402,7 @@ export default function DecisionsPage() {
           <div className="text-sm text-gray-500 mb-2">
             {chairDecisions.length} stock debates — these show the full Bull vs Bear reasoning and final committee verdict
           </div>
-          {dLoading && <div className="text-gray-500 text-sm">Loading…</div>}
+          {dLoading && <TableSkeleton rows={3} cols={4} />}
           {chairDecisions.map((d, i) => (
             <DecisionCard
               key={i}
@@ -380,7 +422,7 @@ export default function DecisionsPage() {
       {tab === 'all' && (
         <div className="space-y-2">
           <div className="text-sm text-gray-500 mb-2">{allDecisions.length} decisions recorded</div>
-          {dLoading && <div className="text-gray-500 text-sm">Loading…</div>}
+          {dLoading && <TableSkeleton rows={3} cols={4} />}
           {allDecisions.map((d, i) => (
             <DecisionCard
               key={i}

@@ -7,6 +7,9 @@ interface Store {
   liveEvents: LiveEvent[]
   addLiveEvent: (e: LiveEvent) => void
   clearEvents:  () => void
+
+  selectedSymbol: string | null
+  setSelectedSymbol: (s: string | null) => void
 }
 
 export const useStore = create<Store>((set) => ({
@@ -15,4 +18,7 @@ export const useStore = create<Store>((set) => ({
     liveEvents: [e, ...s.liveEvents].slice(0, MAX_EVENTS)
   })),
   clearEvents: () => set({ liveEvents: [] }),
+
+  selectedSymbol: null,
+  setSelectedSymbol: (s) => set({ selectedSymbol: s }),
 }))
