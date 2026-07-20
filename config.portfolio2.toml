@@ -1,0 +1,124 @@
+# Second portfolio — a starting example, not a prescribed final answer.
+# Differs from config.toml on exactly 3 dimensions so any change in results
+# is attributable to something specific: smaller capital, a stricter risk
+# bar, and no Reddit sentiment. Copy this file to build a different persona
+# instead of editing this one, so both stay around to compare.
+#
+# Run with:
+#   MM_CONFIG_PATH=config.portfolio2.toml MM_PORT=8001 MM_DATA_DIR=data/portfolios/portfolio2 python main.py --paper
+
+[system]
+name = "MoneyMaker"
+env = "sandbox"
+log_level = "INFO"
+timezone = "Asia/Kolkata"
+
+[capital]
+total_capital = 500_000     # ₹5 lakh instead of ₹10 lakh
+intraday_pct   = 0.40
+long_term_pct  = 0.50
+guardian_reserve_pct = 0.10
+
+[market_hours]
+enabled = true
+open  = "09:15"
+close = "15:30"
+
+[circuit_breaker]
+daily_halt_pct       = 2.0
+emergency_halt_pct   = 4.0
+consecutive_loss_days = 3
+vix_spike_pct        = 30.0
+
+[data]
+stale_feed_seconds       = 30
+price_anomaly_pct        = 10.0
+price_anomaly_seconds    = 60
+cross_source_threshold   = 0.5
+
+[pods]
+sandbox_min_days         = 14
+sandbox_min_pnl_pct      = 1.0
+probation_capital_pct    = 0.01
+shadow_promote_days      = 14
+per_pod_budget           = 100000
+
+[long_term_desk]
+min_conviction_to_queue  = 0.65
+idea_expiry_hours        = 48
+room1_min_votes          = 4
+room1_approve_threshold  = 0.60
+scan_interval_minutes    = 10
+max_ideas_per_scan       = 3
+exchange                 = "NSE"
+
+universe = [
+  "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "INFY",
+  "SBIN", "BHARTIARTL", "KOTAKBANK", "HINDUNILVR", "LT",
+  "BAJFINANCE", "AXISBANK", "ASIANPAINT", "MARUTI", "TITAN",
+  "SUNPHARMA", "WIPRO", "ULTRACEMCO", "NTPC", "POWERGRID",
+  "NESTLEIND", "M&M", "ADANIENT", "TATAMOTORS", "HCLTECH",
+  "COALINDIA", "GRASIM", "INDUSINDBK", "ONGC", "TECHM",
+]
+
+[watchlists]
+momentum    = ["RELIANCE", "INFY", "TCS", "BHARTIARTL", "HDFCBANK", "AXISBANK",
+               "BAJFINANCE", "LT", "MARUTI", "TITAN"]
+breakout    = ["ADANIENT", "RELIANCE", "TATAMOTORS", "WIPRO", "SUNPHARMA",
+               "BAJAJFINSV", "MARUTI", "TATASTEEL", "HCLTECH", "POWERGRID"]
+mean_rev    = ["HDFCBANK", "ICICIBANK", "SBIN", "WIPRO", "TECHM", "LT",
+               "ADANIPORTS", "BPCL", "HINDUNILVR", "TITAN"]
+
+[guardian]
+stop_loss_default_pct    = 2.5
+trailing_stop_default_pct = 2.5
+correlation_crisis_threshold = 0.85
+news_poll_seconds        = 30
+max_position_pct_of_total_capital = 2.0
+
+# This portfolio's risk appetite — stricter than the default on both counts,
+# a more conservative persona than the first portfolio.
+[risk_gate]
+min_risk_reward        = 1.5   # default portfolio runs 1.2
+max_correlation         = 0.75  # default portfolio runs 0.85
+max_single_position_pct = 10.0
+
+# No Reddit sentiment feeding this portfolio's ideas — technicals/fundamentals
+# and mainstream news only. Toggle back on to compare with it included.
+[features]
+reddit = false
+
+[feedback]
+loop1_delay_minutes      = 30
+loop2_min_trades         = 20
+loop3_min_votes          = 50
+loop4_frequency_days     = 30
+
+[broker]
+default = "paper"
+
+[broker.paper]
+slippage_bps = 5.0
+
+[llm]
+provider = "azure_openai"
+
+[llm.deployments]
+fast      = "gpt-4.1-mini"
+standard  = "gpt-4.1-mini"
+reasoning = "gpt-4.1-mini"
+deep      = "gpt-4.1-mini"
+embedding = "text-embedding-3-large"
+
+[database]
+url = "sqlite+aiosqlite:///./moneymaker.db"
+
+[api]
+host = "0.0.0.0"
+port = 8001
+cors_origins = ["http://localhost:5173"]
+
+[market]
+nse_open  = "09:15"
+nse_close = "15:30"
+pre_open  = "09:00"

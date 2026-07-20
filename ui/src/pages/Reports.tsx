@@ -2,6 +2,7 @@ import { useState, useMemo, useRef, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { fetchJson, type Trade, type CapitalSnapshot } from '../lib/api'
 import { fmtInr, fmtPrice, cn } from '../lib/utils'
+import { useStore } from '../hooks/useStore'
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
 function useDarkMode() {
@@ -78,6 +79,42 @@ function periodStart(p: Period): Date | null {
   return null
 }
 function inPeriod(t: Trade, s: Date | null) { return !s || new Date(t.timestamp) >= s }
+
+// ── CSV export ────────────────────────────────────────────────────────────────
+function csvCell(v: string | number): string {
+  const s = String(v)
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+}
+function downloadTradesCsv(trades: Trade[], periodLabel: string) {
+  const cols = [
+    'timestamp', 'symbol', 'side', 'quantity', 'entry_price', 'exit_price',
+    'charges', 'tax', 'gross_pnl', 'net_pnl', 'source',
+  ]
+  const rows = trades.map(t => [
+    t.timestamp,
+    t.symbol,
+    t.side,
+    t.quantity,
+    t.entry_price ?? '',
+    t.price,
+    t.charges ?? '',
+    t.tax ?? '',
+    t.pnl,
+    t.net_pnl ?? t.pnl,
+    t.source_pod || t.source_desk || '',
+  ])
+  const csv = [cols, ...rows].map(r => r.map(csvCell).join(',')).join('\n')
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+  const url  = URL.createObjectURL(blob)
+  const a    = document.createElement('a')
+  const stamp = new Date().toISOString().slice(0, 10)
+  a.href = url
+  a.download = `moneymaker-report-${periodLabel.toLowerCase().replace(/\s+/g, '-')}-${stamp}.csv`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
 
 // ── Format helpers ────────────────────────────────────────────────────────────
 function fmtCr(v: number) {
@@ -518,15 +555,16 @@ function Bar({ val, max }: { val: number; max: number }) {
 // ─────────────────────────────────────────────────────────────────────────────
 export default function ReportsPage() {
   const isDark = useDarkMode()
+  const selectedPortfolioId = useStore(s => s.selectedPortfolioId)
   const [period, setPeriod] = useState<Period>('all')
 
   const { data: allTrades = [], isLoading } = useQuery<Trade[]>({
-    queryKey: ['trades'],
+    queryKey: ['trades', selectedPortfolioId],
     queryFn: () => fetchJson('/portfolio/trades'),
     refetchInterval: 30_000,
   })
   const { data: capital } = useQuery<CapitalSnapshot>({
-    queryKey: ['capital-snapshot'],
+    queryKey: ['capital-snapshot', selectedPortfolioId],
     queryFn: () => fetchJson('/portfolio/snapshot'),
     refetchInterval: 30_000,
   })
@@ -688,6 +726,14 @@ export default function ReportsPage() {
               </button>
             ))}
           </div>
+          <button
+            onClick={() => downloadTradesCsv(closed, PERIODS.find(p => p.key === period)?.label ?? period)}
+            disabled={closed.length === 0}
+            title={closed.length === 0 ? 'No closed trades in this period yet' : 'Download this period as CSV'}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-white/[0.08] bg-[#0d1117] text-xs font-semibold text-gray-400 hover:text-white hover:border-white/[0.16] transition-all disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-gray-400 disabled:hover:border-white/[0.08]"
+          >
+            ↓ Download CSV
+          </button>
         </div>
       </div>
 

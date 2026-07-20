@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { fetchJson, type Decision } from '../lib/api'
 import { cn } from '../lib/utils'
+import { useStore } from '../hooks/useStore'
 
 function agentInfo(id: string): { label: string; color: string; dot: string; room: string } {
   if (id.includes('news_watchdog'))    return { label: 'News Watchdog',       color: 'text-pink-400',   dot: '#f472b6', room: 'Research'   }
@@ -581,8 +582,9 @@ function SessionBlock({ session, index, defaultOpen }: {
 
 // ── Main panel ────────────────────────────────────────────────────────────────
 export function DebateModal({ symbol, onClose }: { symbol: string; onClose: () => void }) {
+  const selectedPortfolioId = useStore(s => s.selectedPortfolioId)
   const { data: newest = [], isLoading } = useQuery<Decision[]>({
-    queryKey: ['debate', symbol],
+    queryKey: ['debate', symbol, selectedPortfolioId],
     queryFn:  () => fetchJson(`/decisions/?symbol=${encodeURIComponent(symbol)}&limit=200`),
     staleTime: 0,
   })

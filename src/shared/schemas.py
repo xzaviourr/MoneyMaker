@@ -278,6 +278,13 @@ class Position(BaseModel):
     strategy:       Optional[str] = None
     opened_at:      datetime = Field(default_factory=datetime.utcnow)
     updated_at:     datetime = Field(default_factory=datetime.utcnow)
+    # Set once at entry from the opening order and never re-derived from the
+    # closing order — an exit placed by portfolio_manager (source_pod=
+    # "portfolio_manager") would otherwise look "intraday" even when it's
+    # closing a delivery position the long-term desk opened days earlier,
+    # which would misclassify the trade's capital-gains tax treatment.
+    is_intraday:    bool     = True
+    entry_charges:  Decimal  = Decimal("0")
 
     @property
     def market_value(self) -> Decimal:
@@ -383,7 +390,10 @@ class TradeCostEstimate(BaseModel):
     exchange:             Exchange
     quantity:             int
     order_type:           OrderType
-    commission:           Decimal
+    commission:           Decimal   # sum of brokerage + stt + txn + gst + sebi + stamp + dp
+    brokerage:            Decimal = Decimal("0")
+    stt:                  Decimal = Decimal("0")
+    dp_charges:           Decimal = Decimal("0")
     spread_cost:          Decimal
     market_impact:        Decimal
     slippage:             Decimal

@@ -35,6 +35,7 @@ class CostBasisAccountant:
                 exchange=verdict.exchange,
                 quantity=quantity,
                 price=Decimal(str(current_price)),
+                side=side,
                 is_intraday=False,  # long-term desk always delivery
                 is_short=(side == OrderSide.SELL),
             )

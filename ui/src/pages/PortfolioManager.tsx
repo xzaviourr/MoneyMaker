@@ -301,21 +301,22 @@ function DecisionCard({ d }: { d: PMDecision }) {
 
 export default function PortfolioManagerPage() {
   const [debateSymbol, setDebateSymbol] = useState<string | null>(null)
+  const selectedPortfolioId = useStore(s => s.selectedPortfolioId)
 
   const { data: positions = [], isLoading } = useQuery<Position[]>({
-    queryKey:        ['positions'],
+    queryKey:        ['positions', selectedPortfolioId],
     queryFn:         () => fetchJson('/portfolio/positions'),
     refetchInterval: 10_000,
   })
 
   const { data: holdings = [] } = useQuery<PMHolding[]>({
-    queryKey:        ['pm-holdings'],
+    queryKey:        ['pm-holdings', selectedPortfolioId],
     queryFn:         () => fetchJson('/portfolio/holdings'),
     refetchInterval: 10_000,
   })
 
   const { data: apiDecisions = [] } = useQuery<PMDecision[]>({
-    queryKey:        ['pm-decisions'],
+    queryKey:        ['pm-decisions', selectedPortfolioId],
     queryFn:         () => fetchJson('/portfolio/decisions'),
     refetchInterval: 15_000,
   })

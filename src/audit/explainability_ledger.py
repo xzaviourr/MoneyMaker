@@ -15,9 +15,11 @@ from typing import Any, Optional
 
 import structlog
 
+from ..shared.data_paths import DATA_DIR
+
 log = structlog.get_logger(__name__)
 
-_DB_PATH = Path("data/explainability.db")
+_DB_PATH = DATA_DIR / "explainability.db"
 
 
 class ExplainabilityLedger:

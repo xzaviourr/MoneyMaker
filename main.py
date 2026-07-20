@@ -238,7 +238,17 @@ async def _register_pods(pod_supervisor: PodSupervisor, broker: BrokerGateway) -
     ]
 
     capital = CapitalTracker.get()
-    per_pod_budget = Decimal(str(toml_cfg.get("pods", {}).get("per_pod_budget", 100_000)))
+    # per_pod_budget in config.toml is a cap, not a fixed draw — it was
+    # previously allocated as-is regardless of the intraday pillar's real
+    # size, which only ever worked by coincidence at the default ₹10L
+    # capital (₹4L intraday / 4 pods = exactly ₹1L each). Any other total
+    # capital (e.g. a smaller second portfolio) either overdraws the pillar
+    # and crashes on the last pod, or leaves it under-used. Split the real
+    # pillar evenly across pods instead, capped at the configured ceiling.
+    configured_cap = Decimal(str(toml_cfg.get("pods", {}).get("per_pod_budget", 100_000)))
+    intraday_total = await capital.available_in_pillar("intraday")
+    fair_share     = (intraday_total / len(pods)) if pods else Decimal("0")
+    per_pod_budget = min(configured_cap, fair_share)
 
     classifier = RegimeClassifier.get()
     for pod in pods:

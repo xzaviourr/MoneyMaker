@@ -4,6 +4,7 @@ import { useLiveFeed } from './hooks/useLiveFeed'
 import { useStore } from './hooks/useStore'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { DebateModal } from './components/DebateModal'
+import { PortfolioSwitcher } from './components/PortfolioSwitcher'
 import Dashboard from './pages/Dashboard'
 import PodsPage from './pages/Pods'
 import PositionsPage from './pages/Positions'
@@ -140,6 +141,7 @@ export default function App() {
             <NavItem to="/logs"      label="Logs"               />
           </nav>
           <div className="ml-auto flex items-center gap-3">
+            <PortfolioSwitcher />
             <ThemeToggle />
             <SymbolFocus />
             <div
