@@ -312,10 +312,22 @@ class LongTermDesk:
         # Tie the reasoning back to what actually happened — bought or not,
         # how much, at what target/stop — instead of leaving "approved" as
         # the last visible word on a decision that may not have executed.
+        # AllocationChair already reserved alloc_plan.allocated_capital in
+        # CapitalTracker before Room 3 ran. Room 3 blocking/deferring (risk
+        # gate, tail risk, market-closed timing) left that reservation in
+        # place forever with no release path — capital silently vanished
+        # from the long_term pillar on every rejected idea, even though
+        # nothing was ever actually bought. Release whatever wasn't spent.
+        from ..supervisor.capital_tracker import CapitalTracker
+
         filled = [o for o in exec_plan.orders_placed if o.get("average_fill_price")]
         if filled:
             total_qty   = sum(o.get("filled_quantity", 0) for o in filled)
             avg_price   = sum(float(o["average_fill_price"]) * o.get("filled_quantity", 0) for o in filled) / max(total_qty, 1)
+            filled_value = avg_price * total_qty
+            unused       = alloc_plan.allocated_capital - filled_value
+            if unused > 0:
+                await CapitalTracker.get().release_lt_desk(idea.symbol, unused)
             target      = current_price * (1 + alloc_plan.target_pct_upside / 100)
             stop        = current_price * (1 - alloc_plan.stop_loss_pct_downside / 100)
             await self._record_outcome(
@@ -323,6 +335,7 @@ class LongTermDesk:
                 f"BOUGHT {total_qty} @ ₹{avg_price:,.2f} — target ₹{target:,.2f}, stop ₹{stop:,.2f}",
             )
         else:
+            await CapitalTracker.get().release_lt_desk(idea.symbol, alloc_plan.allocated_capital)
             await self._record_outcome(idea.symbol, f"NOT EXECUTED — {exec_plan.reason or exec_plan.status}")
 
     async def _record_outcome(self, symbol: str, outcome: str) -> None:

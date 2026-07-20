@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchJson, postJson, type PodInfo } from '../lib/api'
 import { fmtInr, cn } from '../lib/utils'
 import { TableSkeleton } from '../components/Skeleton'
+import { useStore } from '../hooks/useStore'
 
 const STATE_COLORS: Record<string, string> = {
   SANDBOX:   'bg-gray-700 text-gray-300',
@@ -61,15 +62,16 @@ function PodRow({ pod, onCommand }: { pod: PodInfo; onCommand: (id: string, acti
 
 export default function PodsPage() {
   const qc = useQueryClient()
+  const selectedPortfolioId = useStore(s => s.selectedPortfolioId)
   const { data: pods = [], isLoading } = useQuery<PodInfo[]>({
-    queryKey: ['pods'],
+    queryKey: ['pods', selectedPortfolioId],
     queryFn:  () => fetchJson('/pods/'),
   })
 
   const cmd = useMutation({
     mutationFn: ({ id, action }: { id: string; action: string }) =>
       postJson(`/pods/${id}/command`, { action }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['pods'] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['pods', selectedPortfolioId] }),
   })
 
   return (

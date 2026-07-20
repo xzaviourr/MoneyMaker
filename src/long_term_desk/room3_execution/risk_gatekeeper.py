@@ -5,15 +5,22 @@ from typing import Any
 
 import structlog
 
+from ...shared.config import toml_cfg
 from ...shared.schemas import AllocationPlan
 from ...supervisor.circuit_breaker import CircuitBreaker
 
 log = structlog.get_logger(__name__)
 
-# Hard limits
-_MAX_SINGLE_POSITION_PCT = 10.0   # max 10% of LT pillar in one position
-_MAX_CORR_WITH_EXISTING  = 0.85   # block if new position corr > 85% with existing
-_MIN_RR_RATIO            = 1.5    # minimum risk-reward to proceed
+# A portfolio's own config.toml ([risk_gate] section) can override any of
+# these to build a more conservative or more aggressive persona — e.g. a
+# stricter _MIN_RR_RATIO and lower _MAX_CORR_WITH_EXISTING for a cautious
+# portfolio, or looser values for a bold one. Defaults match the values
+# tuned on 2026-07-13, when a stricter 1.5 R:R bar produced 0 trades across
+# 120+ debated ideas in a full day; most rejections landed at 1.25-1.47.
+_risk_cfg = toml_cfg.get("risk_gate", {})
+_MAX_SINGLE_POSITION_PCT = float(_risk_cfg.get("max_single_position_pct", 10.0))
+_MAX_CORR_WITH_EXISTING  = float(_risk_cfg.get("max_correlation", 0.85))
+_MIN_RR_RATIO            = float(_risk_cfg.get("min_risk_reward", 1.2))
 
 
 class RiskGatekeeper:

@@ -28,11 +28,17 @@ from ..shared.schemas import (
     Quote,
 )
 from ..shared.config import toml_cfg
+from ..shared.data_paths import DATA_DIR
+from ..shared.trade_cost_estimator import (
+    current_financial_year_label,
+    estimate_capital_gains_tax,
+    estimate_trade_cost,
+)
 from .base_broker import BaseBroker, QuoteCallback
 
 log = structlog.get_logger(__name__)
 
-_STATE_PATH = Path("data/paper_broker_state.json")
+_STATE_PATH = DATA_DIR / "paper_broker_state.json"
 
 
 class PaperBroker(BaseBroker):
@@ -49,13 +55,17 @@ class PaperBroker(BaseBroker):
     def __init__(self) -> None:
         cfg = toml_cfg.get("broker", {}).get("paper", {})
         self._slippage_bps = Decimal(str(cfg.get("slippage_bps", 5.0)))
-        self._commission = Decimal(str(cfg.get("commission_flat", 20.0)))
         self._balance = Decimal(str(
             toml_cfg.get("capital", {}).get("total_capital", 1_000_000)
         ))
         self._positions: dict[str, Position] = {}
         self._orders: dict[str, Order] = {}
         self._trade_book: list[dict] = []
+        # ₹1.25L LTCG exemption is per-financial-year, not per-trade — track
+        # cumulative LTCG booked so far this FY so it's applied progressively
+        # instead of every long-hold winner getting the exemption from scratch.
+        self._ltcg_realized_this_fy = Decimal("0")
+        self._fy_label = current_financial_year_label(datetime.utcnow())
         self._lock = asyncio.Lock()
         self._connected = False
         self._stream_task: asyncio.Task | None = None  # type: ignore[type-arg]
@@ -78,6 +88,12 @@ class PaperBroker(BaseBroker):
             self._balance = Decimal(data["balance"])
             self._positions = {k: Position(**v) for k, v in data.get("positions", {}).items()}
             self._trade_book = data.get("trade_book", [])
+            # Only carry the LTCG-exemption counter forward if we're still in
+            # the same Indian financial year (Apr-Mar) it was recorded in —
+            # otherwise a restart in a new FY would wrongly keep last year's
+            # exemption usage and under-apply this year's ₹1.25L allowance.
+            if data.get("fy_label") == self._fy_label:
+                self._ltcg_realized_this_fy = Decimal(data.get("ltcg_realized_this_fy", "0"))
             log.info("paper_broker.state_restored", balance=str(self._balance),
                      positions=len(self._positions), trades=len(self._trade_book))
         except Exception as exc:
@@ -90,6 +106,8 @@ class PaperBroker(BaseBroker):
                 "balance":    str(self._balance),
                 "positions":  {k: json.loads(v.model_dump_json()) for k, v in self._positions.items()},
                 "trade_book": self._trade_book,
+                "fy_label":   self._fy_label,
+                "ltcg_realized_this_fy": str(self._ltcg_realized_this_fy),
             }
             tmp = _STATE_PATH.with_suffix(".tmp")
             tmp.write_text(json.dumps(data))
@@ -219,7 +237,7 @@ class PaperBroker(BaseBroker):
                         q = await self.get_quote(symbol, exchange)
                         self._prices[symbol] = q.ltp
                     else:
-                        pct = Decimal(str(random.gauss(0, 0.002)))
+                        pct = Decimal(str(random.gauss(0, 0.00005)))
                         self._prices[symbol] *= (1 + pct)
                     q = Quote(
                         symbol=symbol,
@@ -262,14 +280,27 @@ class PaperBroker(BaseBroker):
             quote.ltp, order.side, order.order_type
         )
         fill_value = fill_price * Decimal(str(order.quantity))
-        commission = self._commission
 
         realized_pnl = Decimal("0")
+        tax = Decimal("0")
+        charges = Decimal("0")
         entry_price: Optional[Decimal] = None
         entry_time: Optional[datetime] = None
         async with self._lock:
             if order.side == OrderSide.BUY:
-                cost = fill_value + commission
+                # A position's tax treatment (intraday speculative income vs.
+                # STCG/LTCG) is fixed at entry — an exit later placed by
+                # portfolio_manager (source_pod="portfolio_manager", no
+                # source_desk) must not make a delivery position look
+                # intraday, so we tag it once here and never re-derive it.
+                is_intraday_leg = order.source_desk is None
+                cost_estimate = estimate_trade_cost(
+                    symbol=order.symbol, exchange=order.exchange, quantity=order.quantity,
+                    price=fill_price, side=order.side, order_type=order.order_type,
+                    is_intraday=is_intraday_leg,
+                )
+                charges = cost_estimate.commission
+                cost = fill_value + charges
                 if cost > self._balance:
                     return OrderResult(
                         order_id=order.id,
@@ -277,7 +308,7 @@ class PaperBroker(BaseBroker):
                         rejection_reason="Insufficient funds",
                     )
                 self._balance -= cost
-                self._update_position(order, fill_price)
+                self._update_position(order, fill_price, charges, is_intraday_leg)
             else:
                 pos_key = f"{order.symbol}_{order.exchange.value}"
                 if pos_key not in self._positions:
@@ -286,11 +317,33 @@ class PaperBroker(BaseBroker):
                         status=OrderStatus.REJECTED,
                         rejection_reason="No position to sell",
                     )
-                entry_price  = self._positions[pos_key].average_price
-                entry_time   = self._positions[pos_key].opened_at
-                realized_pnl = (fill_price - entry_price) * Decimal(str(order.quantity)) - commission
-                self._balance += fill_value - commission
-                self._close_or_reduce_position(order, fill_price)
+                pos          = self._positions[pos_key]
+                entry_price  = pos.average_price
+                entry_time   = pos.opened_at
+                qty_before   = pos.quantity
+                cost_estimate = estimate_trade_cost(
+                    symbol=order.symbol, exchange=order.exchange, quantity=order.quantity,
+                    price=fill_price, side=order.side, order_type=order.order_type,
+                    is_intraday=pos.is_intraday,
+                )
+                exit_charges = cost_estimate.commission
+                # This leg's share of the entry-side charges paid when the
+                # position was opened, so realized P&L reflects the full
+                # round-trip cost, not just the exit leg.
+                proportional_entry_charges = (
+                    pos.entry_charges * Decimal(order.quantity) / Decimal(qty_before)
+                    if qty_before else Decimal("0")
+                )
+                charges = exit_charges + proportional_entry_charges
+                realized_pnl = (fill_price - entry_price) * Decimal(str(order.quantity)) - charges
+
+                holding_days = (datetime.utcnow() - entry_time).days if entry_time else 0
+                tax, self._ltcg_realized_this_fy = estimate_capital_gains_tax(
+                    realized_pnl, pos.is_intraday, holding_days, self._ltcg_realized_this_fy,
+                )
+
+                self._balance += fill_value - exit_charges - tax
+                self._close_or_reduce_position(order, fill_price, proportional_entry_charges)
 
         broker_order_id = f"PAPER_{uuid.uuid4().hex[:8].upper()}"
         order.broker_order_id = broker_order_id
@@ -305,6 +358,9 @@ class PaperBroker(BaseBroker):
             "entry_price": float(entry_price) if entry_price is not None else None,
             "entry_time":  entry_time.isoformat() if entry_time is not None else None,
             "pnl":         float(realized_pnl),
+            "charges":     float(charges),
+            "tax":         float(tax),
+            "net_pnl":     float(realized_pnl - tax),
             "slippage":    float(abs(fill_price - quote.ltp) * Decimal(str(order.quantity))),
             "source_pod":  order.source_pod,
             "source_desk": order.source_desk,
@@ -390,7 +446,10 @@ class PaperBroker(BaseBroker):
             return price + slip if side == OrderSide.BUY else price - slip
         return price
 
-    def _update_position(self, order: Order, fill_price: Decimal) -> None:
+    def _update_position(
+        self, order: Order, fill_price: Decimal, charges: Decimal = Decimal("0"),
+        is_intraday: bool = True,
+    ) -> None:
         key = f"{order.symbol}_{order.exchange.value}"
         if key in self._positions:
             pos = self._positions[key]
@@ -401,6 +460,7 @@ class PaperBroker(BaseBroker):
                 "average_price": avg,
                 "current_price": fill_price,
                 "source_pod": order.source_pod,
+                "entry_charges": pos.entry_charges + charges,
                 # Refresh the exit plan to the latest signal's targets — otherwise a
                 # position opened before this feature existed (stop_loss=None) would
                 # stay unmonitored forever even after averaging into it again.
@@ -422,9 +482,13 @@ class PaperBroker(BaseBroker):
                 source_pod=order.source_pod,
                 source_desk=order.source_desk,
                 strategy=order.strategy,
+                is_intraday=is_intraday,
+                entry_charges=charges,
             )
 
-    def _close_or_reduce_position(self, order: Order, fill_price: Decimal) -> None:
+    def _close_or_reduce_position(
+        self, order: Order, fill_price: Decimal, proportional_entry_charges: Decimal = Decimal("0"),
+    ) -> None:
         key = f"{order.symbol}_{order.exchange.value}"
         pos = self._positions[key]
         if order.quantity >= pos.quantity:
@@ -433,6 +497,7 @@ class PaperBroker(BaseBroker):
             self._positions[key] = pos.model_copy(update={
                 "quantity": pos.quantity - order.quantity,
                 "current_price": fill_price,
+                "entry_charges": pos.entry_charges - proportional_entry_charges,
             })
 
     async def mark_to_market(self) -> None:
@@ -460,6 +525,6 @@ class PaperBroker(BaseBroker):
         async with self._lock:
             pos = self._positions.pop(key, None)
             if pos:
-                self._balance += pos.average_price * pos.quantity + self._commission
+                self._balance += pos.average_price * pos.quantity + pos.entry_charges
                 self._save_state()
         return pos

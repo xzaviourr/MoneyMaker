@@ -24,6 +24,7 @@ import structlog
 from ..brokers.broker_gateway import BrokerGateway
 from ..foundation.regime_classifier import RegimeClassifier
 from ..shared.config import toml_cfg
+from ..shared.data_paths import DATA_DIR
 from ..shared.market_hours import is_market_open
 from ..shared.message_bus import MessageBus
 from ..shared.schemas import (
@@ -60,14 +61,6 @@ class BasePod(ABC):
         self._trade_count = 0  # entries placed — not the same as closed trades, see get_metrics()
         self._win_count  = 0
         self._loss_count = 0
-        # Must match PaperBroker's own commission exactly, or a trade that's
-        # marginally profitable before commission gets counted here as a win
-        # while the broker (and the Feedback page, fed from the broker's own
-        # trade book) correctly counts it as a net loss — which is exactly
-        # the Pods-page-vs-Feedback-page mismatch this was causing.
-        self._commission = Decimal(str(
-            toml_cfg.get("broker", {}).get("paper", {}).get("commission_flat", 20.0)
-        ))
         self._is_paused  = False
         self._signal_cooldown: dict[str, datetime] = {}  # symbol -> retry-after, set on order rejection
         self._orders_in_flight: set[str] = set()  # symbols with an order currently being placed
@@ -82,7 +75,7 @@ class BasePod(ABC):
     # forever in a dev environment that restarts often.
 
     def _metrics_path(self) -> Path:
-        return Path(f"data/pod_metrics_{self.pod_id}.json")
+        return DATA_DIR / f"pod_metrics_{self.pod_id}.json"
 
     def _load_metrics(self) -> None:
         path = self._metrics_path()
@@ -440,6 +433,25 @@ class BasePod(ABC):
         qty = int(target_value / buffer_price)
         return max(0, qty)
 
+    def _round_trip_charges(self, pos: Position, exit_price: Decimal) -> Decimal:
+        """Entry-leg + exit-leg realistic charges for a closed pod position.
+        Must mirror PaperBroker's own per-trade cost calculation exactly, or
+        a trade that's marginally profitable before charges gets counted here
+        as a win while the broker (and the Feedback page, fed from the
+        broker's own trade book) correctly counts it as a net loss — the
+        Pods-page-vs-Feedback-page mismatch this replaced a flat-commission
+        constant to avoid."""
+        entry_leg = estimate_trade_cost(
+            symbol=pos.symbol, exchange=pos.exchange, quantity=pos.quantity,
+            price=pos.average_price, side=pos.side, is_intraday=True,
+        )
+        exit_side = OrderSide.SELL if pos.side == OrderSide.BUY else OrderSide.BUY
+        exit_leg = estimate_trade_cost(
+            symbol=pos.symbol, exchange=pos.exchange, quantity=pos.quantity,
+            price=exit_price, side=exit_side, is_intraday=True,
+        )
+        return entry_leg.commission + exit_leg.commission
+
     async def _exit_position(self, pos: Position, quote: Quote, reason: str = "manual") -> None:
         """Close a position immediately — stop-loss, take-profit, max holding time, or shutdown."""
         order = Order(
@@ -461,7 +473,8 @@ class BasePod(ABC):
                         symbol=pos.symbol, reason=reason, rejection=result.rejection_reason)
             return
         if result.average_fill_price:
-            realized_pnl = (result.average_fill_price - pos.average_price) * pos.quantity - self._commission
+            charges = self._round_trip_charges(pos, result.average_fill_price)
+            realized_pnl = (result.average_fill_price - pos.average_price) * pos.quantity - charges
             self._daily_pnl  += realized_pnl
             self._total_pnl  += realized_pnl
             if realized_pnl > 0:
@@ -515,7 +528,8 @@ class BasePod(ABC):
             self._positions.pop(key, None)
             return
 
-        realized_pnl = (Decimal(str(fill_price)) - pos.average_price) * pos.quantity - self._commission
+        charges = self._round_trip_charges(pos, Decimal(str(fill_price)))
+        realized_pnl = (Decimal(str(fill_price)) - pos.average_price) * pos.quantity - charges
         self._daily_pnl += realized_pnl
         self._total_pnl += realized_pnl
         if realized_pnl > 0:

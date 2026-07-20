@@ -46,7 +46,10 @@ _MAX_WATCHED_SYMBOLS     = 100   # cap on the dynamically-grown per-symbol news 
 _MAX_PENDING_APPROVALS   = 20    # cap on outstanding "should we buy this?" prompts
 _APPROVAL_COOLDOWN_S     = 24 * 3600  # don't re-suggest the same symbol within 24h
 _SEEN_ARTICLES_PATH      = Path("data/news_seen_articles.json")
+_SEEN_RSS_PATH           = Path("data/news_seen_rss.json")
+_SEEN_REDDIT_PATH        = Path("data/news_seen_reddit.json")
 _SEEN_ARTICLES_MAX       = 5000  # cap so the file doesn't grow forever
+_MAX_NEWS_AGE_HOURS      = 24    # ignore articles older than this
 
 # Company name → NSE symbol, so a market-wide RSS headline ("Reliance signs deal...")
 # can be attributed to a real, tradeable symbol instead of a generic "MARKET" tag.
@@ -173,8 +176,8 @@ class NewsWatchdog:
         # approving each one would mean buying the same stock again and again.
         self._approval_cooldown: dict[str, float] = {}
         self._seen_articles: set[str] = self._load_seen_articles()
-        self._seen_rss: set[str] = set()
-        self._seen_reddit: set[str] = set()
+        self._seen_rss: set[str] = self._load_seen_set(_SEEN_RSS_PATH)
+        self._seen_reddit: set[str] = self._load_seen_set(_SEEN_REDDIT_PATH)
         # The same real story often gets re-syndicated under a different URL/AMP
         # link/tracking params — deduping on link alone let it straight through.
         # Catch it by normalized headline text too, scoped per-pipeline (NOT
@@ -210,6 +213,26 @@ class NewsWatchdog:
             import os; os.replace(tmp, _SEEN_ARTICLES_PATH)
         except Exception as exc:
             log.debug("news_watchdog.seen_articles_save_failed", error=str(exc))
+
+    @staticmethod
+    def _load_seen_set(path: Path) -> set[str]:
+        try:
+            if path.exists():
+                return set(json.loads(path.read_text()))
+        except Exception:
+            pass
+        return set()
+
+    @staticmethod
+    def _save_seen_set(path: Path, items: set[str]) -> None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            saved = list(items)[-_SEEN_ARTICLES_MAX:]
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(saved))
+            import os; os.replace(tmp, path)
+        except Exception as exc:
+            log.debug("news_watchdog.seen_set_save_failed", path=str(path), error=str(exc))
 
     def add_symbols(self, symbols: list[str]) -> None:
         for s in symbols:
@@ -393,10 +416,23 @@ class NewsWatchdog:
             title = article.get("title", "")
             if not link:
                 continue
+
+            # Age filter — skip articles older than _MAX_NEWS_AGE_HOURS
+            pub = article.get("published_parsed") or article.get("published")
+            if pub:
+                try:
+                    import calendar
+                    pub_ts = calendar.timegm(pub) if hasattr(pub, "__len__") else float(pub)
+                    if (time.time() - pub_ts) / 3600 > _MAX_NEWS_AGE_HOURS:
+                        continue
+                except Exception:
+                    pass
+
             norm = _normalize_headline(title)
             if link in self._seen_rss or (norm and norm in self._seen_rss_titles):
                 continue
             self._seen_rss.add(link)
+            self._save_seen_set(_SEEN_RSS_PATH, self._seen_rss)
             if norm:
                 self._seen_rss_titles.add(norm)
 
@@ -412,7 +448,9 @@ class NewsWatchdog:
             await self._handle_analysis(symbol, analysis, f"[{source}] {title}", f"rss:{source}", link)
             await self._feed_long_term_desk(symbol, analysis, f"[{source}] {title}")
 
-            if symbol != "MARKET" and self._event_pod is not None:
+            # Only fire event pod for meaningful news — WARNING/EMERGENCY severity only
+            if symbol != "MARKET" and self._event_pod is not None \
+                    and analysis.get("severity") in ("WARNING", "EMERGENCY"):
                 await self._event_pod.trigger_event(symbol, "NSE", text)
 
     async def _check_reddit(self) -> None:
@@ -426,10 +464,17 @@ class NewsWatchdog:
             title = post.get("title", "")
             if not url:
                 continue
+
+            # Age filter — Reddit posts have a Unix 'created_utc' timestamp
+            created = post.get("created_utc")
+            if created and (time.time() - float(created)) / 3600 > _MAX_NEWS_AGE_HOURS:
+                continue
+
             norm = _normalize_headline(title)
             if url in self._seen_reddit or (norm and norm in self._seen_reddit_titles):
                 continue
             self._seen_reddit.add(url)
+            self._save_seen_set(_SEEN_REDDIT_PATH, self._seen_reddit)
             if norm:
                 self._seen_reddit_titles.add(norm)
 
@@ -444,7 +489,9 @@ class NewsWatchdog:
             await self._handle_analysis(symbol, analysis, headline, "reddit", url)
             await self._feed_long_term_desk(symbol, analysis, headline)
 
-            if symbol != "MARKET" and self._event_pod is not None:
+            # Only fire event pod for meaningful news — WARNING/EMERGENCY severity only
+            if symbol != "MARKET" and self._event_pod is not None \
+                    and analysis.get("severity") in ("WARNING", "EMERGENCY"):
                 await self._event_pod.trigger_event(symbol, "NSE", text)
 
     async def _check_news(self) -> None:
@@ -458,6 +505,13 @@ class NewsWatchdog:
                 article_id = f"{symbol}:{title}"
                 if not title or article_id in self._seen_articles:
                     continue
+
+                # Age filter — yfinance returns providerPublishTime as a Unix timestamp
+                pub_ts = article.get("providerPublishTime")
+                if pub_ts and (time.time() - float(pub_ts)) / 3600 > _MAX_NEWS_AGE_HOURS:
+                    self._seen_articles.add(article_id)  # mark as seen so it never re-surfaces
+                    continue
+
                 self._seen_articles.add(article_id)
                 self._save_seen_articles()
                 self._record_item(symbol, "yahoo_finance", title)
@@ -467,7 +521,9 @@ class NewsWatchdog:
                 await self._handle_analysis(symbol, analysis, title, "yahoo_finance", article.get("link", ""))
                 await self._feed_long_term_desk(symbol, analysis, title)
 
-                if self._event_pod is not None:
+                # Only fire event pod for meaningful news — WARNING/EMERGENCY severity only
+                if self._event_pod is not None \
+                        and analysis.get("severity") in ("WARNING", "EMERGENCY"):
                     await self._event_pod.trigger_event(symbol, "NSE", f"{title}\n{content}")
 
     async def _fetch_news(self, symbol: str) -> list[dict]:

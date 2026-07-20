@@ -39,6 +39,8 @@ class PositionMonitor:
         cfg = toml_cfg.get("guardian", {})
         self._default_sl_pct      = float(cfg.get("stop_loss_default_pct", 2.0))
         self._trailing_sl_pct     = float(cfg.get("trailing_stop_default_pct", 1.5))
+        self._min_hold_seconds    = int(cfg.get("min_hold_seconds", 900))    # 15 min before normal stop fires
+        self._hard_stop_pct       = float(cfg.get("hard_stop_pct", 4.0))     # immediate exit regardless of hold time
         self._gateway             = gateway
         self._bus                 = MessageBus.get()
         self._positions: dict[str, Position] = {}
@@ -126,8 +128,28 @@ class PositionMonitor:
 
         key = f"{pos.symbol}_{pos.exchange.value}"
         effective_stop = self._compute_stop(pos, self._high_water.get(key, pos.average_price))
-        if (pos.side == OrderSide.BUY and quote.ltp <= effective_stop) or \
-           (pos.side == OrderSide.SELL and quote.ltp >= effective_stop):
+        stop_breached = (pos.side == OrderSide.BUY and quote.ltp <= effective_stop) or \
+                        (pos.side == OrderSide.SELL and quote.ltp >= effective_stop)
+
+        if stop_breached:
+            # Calculate how far the price has moved against us (as a positive %)
+            if pos.side == OrderSide.BUY:
+                loss_pct = float((pos.average_price - quote.ltp) / pos.average_price * 100)
+            else:
+                loss_pct = float((quote.ltp - pos.average_price) / pos.average_price * 100)
+
+            # Hard stop: always exit immediately if loss exceeds hard_stop_pct (default 4%)
+            if loss_pct >= self._hard_stop_pct:
+                log.warning("position_monitor.hard_stop", symbol=pos.symbol,
+                            loss_pct=f"{loss_pct:.2f}%", price=str(quote.ltp))
+                return f"Hard stop triggered: {loss_pct:.1f}% loss at ₹{float(quote.ltp):.2f}"
+
+            # Minimum hold: don't exit on noise in the first min_hold_seconds
+            hold_secs = (datetime.utcnow() - pos.opened_at).total_seconds() \
+                if pos.opened_at else self._min_hold_seconds
+            if hold_secs < self._min_hold_seconds:
+                return None  # Give the trade time to recover its transaction costs
+
             log.warning("position_monitor.stop_breach", symbol=pos.symbol,
                         price=str(quote.ltp), stop=str(effective_stop))
             return f"Stop-loss triggered: {quote.ltp} vs stop {effective_stop}"

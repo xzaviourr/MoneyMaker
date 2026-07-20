@@ -279,6 +279,7 @@ function TradeRow({ t, onViewDebate }: { t: Trade; onViewDebate: (s: string) => 
 
 export default function DecisionsPage() {
   const selectedSymbol = useStore(s => s.selectedSymbol)
+  const selectedPortfolioId = useStore(s => s.selectedPortfolioId)
   const [symbol,       setSymbol]       = useState('')
   const [mode,         setMode]         = useState<'all' | 'demo' | 'paper'>('all')
   const [tab,          setTab]          = useState<'all' | 'debate' | 'trades'>('debate')
@@ -295,13 +296,13 @@ export default function DecisionsPage() {
   params.set('limit', '200')
 
   const { data: decisions = [], isLoading: dLoading } = useQuery<Decision[]>({
-    queryKey:        ['decisions', symbol, mode],
+    queryKey:        ['decisions', symbol, mode, selectedPortfolioId],
     queryFn:         () => fetchJson(`/decisions/?${params}`),
     refetchInterval: 30_000,
   })
 
   const { data: trades = [], isLoading: tLoading } = useQuery<Trade[]>({
-    queryKey:        ['trades'],
+    queryKey:        ['trades', selectedPortfolioId],
     queryFn:         () => fetchJson('/portfolio/trades'),
     refetchInterval: 30_000,
   })

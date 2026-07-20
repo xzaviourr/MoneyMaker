@@ -18,11 +18,12 @@ from typing import Optional
 import aiosqlite
 import structlog
 
+from .data_paths import DATA_DIR
 from .schemas import Message
 
 log = structlog.get_logger(__name__)
 
-_DB_PATH = Path("data/flow_tracker.db")
+_DB_PATH = DATA_DIR / "flow_tracker.db"
 _KEEP_ROWS = 2_000  # rows kept in the DB before trimming
 
 

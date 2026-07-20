@@ -410,33 +410,34 @@ export default function SystemFlow({ height = 'calc(100vh - 100px)' }: Props) {
   // a second useLiveFeed() call here used to open a duplicate connection,
   // processing every event twice and adding extra load to this already-heavy page.
   const latestEvent = useStore(s => s.liveEvents[0])
+  const selectedPortfolioId = useStore(s => s.selectedPortfolioId)
 
   const { data: graph } = useQuery<GraphData>({
-    queryKey:        ['system-graph'],
+    queryKey:        ['system-graph', selectedPortfolioId],
     queryFn:         () => fetchJson('/system/graph'),
     refetchInterval: 3000,
   })
 
   const qc = useQueryClient()
   const { data: toggles = {} } = useQuery<Record<string, boolean>>({
-    queryKey:        ['toggles'],
+    queryKey:        ['toggles', selectedPortfolioId],
     queryFn:         () => fetchJson('/system/toggles'),
     refetchInterval: 3000,
   })
   const toggleMutation = useMutation({
     mutationFn: ({ name, enabled }: { name: string; enabled: boolean }) =>
       postJson(`/system/toggles/${name}`, { enabled }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['toggles'] }); qc.invalidateQueries({ queryKey: ['system-graph'] }) },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['toggles', selectedPortfolioId] }); qc.invalidateQueries({ queryKey: ['system-graph', selectedPortfolioId] }) },
   })
   const podCommandMutation = useMutation({
     mutationFn: ({ podId, action }: { podId: string; action: 'pause' | 'resume' }) =>
       postJson(`/pods/${podId}/command`, { action }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['system-graph'] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['system-graph', selectedPortfolioId] }),
   })
 
   const showLogs = !!selected && LOG_SERVICES.has(selected.id)
   const { data: nodeLogs = [] } = useQuery<ServiceLog[]>({
-    queryKey:        ['node-logs', selected?.id],
+    queryKey:        ['node-logs', selected?.id, selectedPortfolioId],
     queryFn:         () => fetchJson(`/logs?service=${selected?.id}&limit=50`),
     enabled:         showLogs,
     refetchInterval: 5000,

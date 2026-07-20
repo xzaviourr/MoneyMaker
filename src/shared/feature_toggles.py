@@ -22,7 +22,9 @@ freely — it's a flag, not a kill switch.
 """
 from __future__ import annotations
 
-_TOGGLES: dict[str, bool] = {
+from .config import toml_cfg
+
+_DEFAULTS: dict[str, bool] = {
     "long_term_desk":     True,
     "news":               True,
     "reddit":             True,
@@ -38,6 +40,15 @@ _TOGGLES: dict[str, bool] = {
     "capital_tracker":    True,
     "pod_supervisor":     True,
     "paper_broker":       True,
+}
+
+# A portfolio can start with some of these off — e.g. [features] reddit =
+# false to build a "no social sentiment" persona — via its own config.toml
+# (MM_CONFIG_PATH). Still flips freely at runtime after startup through the
+# Flow page, same as before; this only changes where each starts.
+_TOGGLES: dict[str, bool] = {
+    **_DEFAULTS,
+    **toml_cfg.get("features", {}),
 }
 
 

@@ -7,8 +7,9 @@ import { useStore } from '../hooks/useStore'
 export default function PositionsPage() {
   const selectedSymbol    = useStore(s => s.selectedSymbol)
   const setSelectedSymbol = useStore(s => s.setSelectedSymbol)
+  const selectedPortfolioId = useStore(s => s.selectedPortfolioId)
   const { data: positions = [], isLoading } = useQuery<Position[]>({
-    queryKey:        ['positions'],
+    queryKey:        ['positions', selectedPortfolioId],
     queryFn:         () => fetchJson('/portfolio/positions'),
     refetchInterval: 10_000,
   })

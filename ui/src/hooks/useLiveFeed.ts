@@ -8,12 +8,9 @@ export interface LiveEvent {
   ts:      string
 }
 
-function getWsUrl(): string {
+function getWsUrl(backendPort: number): string {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   const host  = window.location.hostname
-  const port  = window.location.port || (proto === 'wss:' ? '443' : '80')
-  // In dev (Vite), the UI is on :3000 but the backend is on :8000
-  const backendPort = (host === 'localhost' || host === '127.0.0.1') ? '8000' : port
   return `${proto}//${host}:${backendPort}/ws/live`
 }
 
@@ -23,6 +20,9 @@ const _MAX_DELAY = 30_000
 export function useLiveFeed() {
   const [connected, setConnected] = useState(false)
   const addEvent = useStore(s => s.addLiveEvent)
+  const portfolios = useStore(s => s.portfolios)
+  const selectedPortfolioId = useStore(s => s.selectedPortfolioId)
+  const port = portfolios.find(p => p.id === selectedPortfolioId)?.port ?? 8000
   const delayRef = useRef(_MIN_DELAY)
 
   useEffect(() => {
@@ -33,7 +33,7 @@ export function useLiveFeed() {
     function connect() {
       if (stopped) return
       try {
-        ws = new WebSocket(getWsUrl())
+        ws = new WebSocket(getWsUrl(port))
 
         ws.onopen = () => {
           setConnected(true)
@@ -71,7 +71,7 @@ export function useLiveFeed() {
       ws?.close()
       if (timer) clearTimeout(timer)
     }
-  }, [addEvent])
+  }, [addEvent, port])
 
   return { connected }
 }

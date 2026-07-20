@@ -91,7 +91,6 @@ encryption_key = ""
 
 [broker.paper]
 slippage_bps = 5.0
-commission_flat = 3.0   # realistic NSE intraday cost for small trades (Zerodha: min(Rs20, 0.03%))
 
 [llm]
 provider = "azure_openai"

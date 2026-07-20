@@ -1,18 +1,30 @@
-const BASE = '/api'
+import { useStore } from '../hooks/useStore'
+
 const API_KEY = (import.meta.env.VITE_API_KEY as string | undefined) ?? ''
+const DEFAULT_PORT = 8000
+
+// The default portfolio (port 8000) keeps using the relative, Vite-proxied
+// '/api' path — byte-for-byte the same request it always made. Any other
+// portfolio calls its backend directly by port; CORS on the backend is
+// already wide open, so no proxy config needs to know about it in advance.
+function base(): string {
+  const { portfolios, selectedPortfolioId } = useStore.getState()
+  const port = portfolios.find(p => p.id === selectedPortfolioId)?.port ?? DEFAULT_PORT
+  return port === DEFAULT_PORT ? '/api' : `http://localhost:${port}/api`
+}
 
 function authHeaders(): Record<string, string> {
   return API_KEY ? { 'X-Api-Key': API_KEY } : {}
 }
 
 export async function fetchJson<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, { headers: authHeaders() })
+  const res = await fetch(`${base()}${path}`, { headers: authHeaders() })
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
   return res.json()
 }
 
 export async function postJson<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(`${base()}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify(body),
@@ -66,6 +78,9 @@ export interface Trade {
   entry_price: number | null
   entry_time:  string | null
   pnl:         number
+  charges?:    number   // absent on trades recorded before the Zerodha-accurate cost model
+  tax?:        number
+  net_pnl?:    number
   slippage:    number
   source_pod:  string | null
   source_desk: string | null

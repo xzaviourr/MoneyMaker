@@ -336,7 +336,7 @@ npm run dev                # opens at http://localhost:5173
 
 ---
 
-## Current Status (last updated: 2026-07-08 evening)
+## Current Status (last updated: 2026-07-13)
 
 ### Azure OpenAI — WORKING
 - Deployment: `gpt-4.1-mini` on resource `anshul-ai-foundary-resource`
@@ -352,7 +352,7 @@ npm run dev                # opens at http://localhost:5173
 - [x] DataSentinel (market data validation + bus publishing)
 - [x] LLM Gateway (Azure OpenAI, all 4 tiers: fast/standard/reasoning/deep)
 - [x] MockLLMProvider — per-symbol varied responses using MD5 hash seed
-- [x] PaperBroker (simulated fills with slippage + commission)
+- [x] PaperBroker (simulated fills with slippage + Zerodha-accurate charges + capital gains tax)
 - [x] 3 intraday pods: Momentum, Breakout, Mean Reversion
 - [x] 2 extra pods built but not wired: ScalpPod, EventPod
 - [x] PodSupervisor (lifecycle SANDBOX→PROBATION→LIVE→REVIEW→KILLED)
@@ -367,6 +367,16 @@ npm run dev                # opens at http://localhost:5173
 - [x] SQLite market data cache (24h TTL, auto backoff on 401)
 - [x] FlowTracker (records every bus message for data lineage)
 - [x] config.toml tuned: scan_interval_minutes=5, min_conviction_to_queue=0.35
+- [x] news_watchdog: seen articles persisted to data/news_seen_articles.json
+      (prevents stale news replaying on restart — 139 articles pre-seeded)
+- [x] base_pod: _orders_in_flight set prevents concurrent signals per symbol
+- [x] trade_cost_estimator: rewritten as a Zerodha-accurate, side-aware cost
+      model (see 2026-07-13 session log) — trade_has_edge checks round-trip
+      cost (2× one-way) with 1.5× safety margin (conviction × 3)
+- [x] Capital gains tax: PaperBroker now computes and deducts real STCG/LTCG/
+      speculative-income tax on every closed trade (see 2026-07-13 log)
+- [x] src/intelligence/ renamed → src/audit/ (explainability_ledger, strategy_memory)
+- [x] src/shared/reddit_feed + rss_news moved → src/feeds/ directory
 
 ### Done — Frontend (UI)
 - [x] All 10 pages: Dashboard, Flow, Portfolio Manager, Pods, Trades, Positions,
@@ -381,6 +391,10 @@ npm run dev                # opens at http://localhost:5173
       Scout thesis → Bull vs Bear side-by-side → Devil's Advocate → Signals →
       Chair verdict. Raw individual agent entries are behind a "Show raw" toggle.
 - [x] Skeleton loading components
+- [x] UTC timestamp fix — ALL pages now append 'Z' before parsing ISO strings
+      so times display in IST not UTC. Fixed in: Decisions, DebateModal,
+      PortfolioManager, Dashboard (LatestTraceCard + EventFeed live timestamps)
+- [x] Offline banner shows correct command: python main.py --paper
 
 ### Pending — Needs Instructor Action
 - [ ] 5Paisa broker integration (account reactivating — needs Client Code,
@@ -454,6 +468,141 @@ will automatically switch to 5Paisa when these env vars are present.
 ---
 
 ## Session Log (most recent first)
+
+### 2026-07-13 — Zerodha-accurate transaction costs + capital gains tax
+
+**Context:** slippage noise and stop-loss min-hold/hard-stop fixes from the previous
+session were already sitting uncommitted (paper_broker.py gauss(0,0.002)→0.00005,
+position_monitor.py min_hold_seconds=900 + hard_stop_pct=4.0). This session's task
+was to make trade costs and taxes actually realistic, on top of those.
+
+**Root problem found:** `trade_cost_estimator.py` had a fairly detailed Zerodha-ish
+cost model, but it was ONLY used for the pre-trade edge-check gate
+(`trade_has_edge` in base_pod.py / cost_basis_accountant.py). The actual fill logic
+in `paper_broker.py` charged a flat ₹20 commission per order regardless of size,
+side, or intraday-vs-delivery — and there was no tax calculation anywhere. The cost
+estimator itself was also side-unaware: it added BOTH buy-side and sell-side STT/
+stamp-duty on every single-leg call, double-counting cost for whichever side wasn't
+actually being traded.
+
+**What was built:**
+1. `src/shared/trade_cost_estimator.py` — rewritten side-aware (`side: OrderSide`
+   param) to match Zerodha's actual published charges:
+   - Brokerage: ₹0 on equity delivery (Zerodha is zero-brokerage delivery), 
+     `min(₹20, 0.03% of trade value)` on intraday equity, flat ₹20 on F&O.
+   - STT: 0.1% delivery (buy AND sell, each charged only on its own leg now —
+     previously both rates were added on every call), 0.025% intraday (sell only).
+   - DP charges: flat ₹15.93 (₹13.5 + 18% GST), delivery sell only, once per scrip
+     regardless of quantity — this charge didn't exist in the model before.
+   - GST base corrected to brokerage + exchange txn + SEBI charges (was missing SEBI).
+   - Added `estimate_capital_gains_tax(realized_pnl, is_intraday, holding_days,
+     ltcg_realized_this_fy)`: intraday = speculative business income @ 30% flat
+     (conservative slab assumption), delivery <12mo = STCG @ 20%, delivery ≥12mo =
+     LTCG @ 12.5% with the real ₹1.25L/FY exemption applied cumulatively (not
+     per-trade — returns an updated running total to feed into the next call).
+     Losses are never taxed (real offset-against-other-gains happens at ITR time,
+     which a single trade can't know).
+   - Added `current_financial_year_label()` — Indian FY is Apr-Mar, not Jan-Dec.
+2. `src/shared/schemas.py` — `Position` gained `is_intraday: bool` (fixed at entry,
+   never re-derived from whatever order closes it — a portfolio_manager exit of a
+   long-term-desk position would otherwise look "intraday" since PM exits only set
+   source_pod, never source_desk) and `entry_charges: Decimal` (so exit-time P&L can
+   subtract the entry leg's real cost, not just the exit leg's). `TradeCostEstimate`
+   gained `brokerage`, `stt`, `dp_charges` breakdown fields (commission stays the sum).
+3. `src/brokers/paper_broker.py` — `place_order()` now calls `estimate_trade_cost()`
+   for the real fill (was a flat `self._commission`), tags new positions
+   `is_intraday` from `order.source_desk is None`, tracks `entry_charges` through
+   averaging/partial-close, and on every sell computes `estimate_capital_gains_tax()`
+   using `holding_days = (now - pos.opened_at).days` and deducts both the exit
+   charges and the tax from balance. FY-rollover-aware LTCG exemption counter
+   (`_ltcg_realized_this_fy` + `_fy_label`) persisted in paper_broker_state.json.
+   `trade_book` entries gained `charges`, `tax`, `net_pnl` fields (`pnl` keeps its
+   old meaning — post-charges, pre-tax — so existing consumers don't need touching).
+   `purge_position` now refunds `pos.entry_charges` instead of the old flat constant.
+4. `src/pods/base_pod.py` — its own internal win/loss counter had a flat-commission
+   constant explicitly kept in sync with PaperBroker's by comment ("must match or
+   Pods-page-vs-Feedback-page mismatch"). Replaced with `_round_trip_charges()`,
+   a local helper that calls the same `estimate_trade_cost()` for both the entry
+   and exit leg to stay approximately in sync with the broker's real number.
+   Removed the now-dead `self._commission` field (and the matching dead
+   `commission_flat` key in config.toml — nothing reads it anymore).
+5. `src/long_term_desk/room2_capital/cost_basis_accountant.py` — now passes
+   `side=side` into `estimate_trade_cost()` (previously always defaulted to BUY,
+   understating cost for short ideas).
+6. `ui/src/lib/api.ts`, `ui/src/pages/Trades.tsx` — Trade Book page now shows
+   Charges and Tax columns and a Net P&L column; header total changed to
+   "Total Realised P&L (net of tax)" plus a "Tax Paid" figure. New fields are
+   optional on the `Trade` type (`charges?`, `tax?`, `net_pnl?`) since ~1052
+   pre-existing trade_book entries on disk predate this change and don't have them
+   — UI falls back to `t.pnl` when `net_pnl` is absent.
+
+**Verified (not yet run live):**
+- Unit-tested `estimate_trade_cost` for all 4 side×intraday combos and
+  `estimate_capital_gains_tax` including the cumulative LTCG exemption math.
+- Ran a full mocked `PaperBroker.place_order()` buy→sell cycle — balance,
+  charges, and pnl all reconcile correctly.
+- Confirmed the 1052 existing trade_book entries and 21 open positions in
+  `data/paper_broker_state.json` still load fine (`is_intraday` defaults to
+  True, `entry_charges` to 0, for records that predate these fields).
+- `npx tsc --noEmit` clean.
+- Have NOT run `python main.py --paper` end-to-end this session — do that first
+  next time to confirm nothing breaks live, then watch the Trades page for the
+  new Charges/Tax/Net P&L columns on freshly closed trades.
+
+**What to do first in next session:**
+- `python main.py --paper` and place a few trades (or wait for pods to fire) —
+  confirm Trades page shows non-zero Charges and (for winners) Tax.
+- Everything from the 2026-07-09 session (slippage fix, stop min-hold/hard-stop)
+  is still uncommitted alongside this — none of it has been run live yet.
+- If commissions/tax now make small-position trades unprofitable even with real
+  edge, that's the model doing its job — the fix is bigger position sizes, not
+  loosening the cost model.
+
+### 2026-07-09 — Dashboard timestamp fix, trade loss diagnosis, GitHub push
+
+**What was done:**
+1. `ui/src/pages/Dashboard.tsx` — Added `fmtTs()` and `fmtTsTime()` helpers.
+   Fixed LatestTraceCard (was `event_ts.slice(0,19).replace('T',' ')` showing UTC)
+   and EventFeed live events (was `e.ts.slice(11,19)` showing UTC time).
+   Both now append 'Z' before parsing so IST is shown correctly.
+2. All changes committed and pushed to GitHub: https://github.com/xzaviourr/MoneyMaker
+   (branch: master, commit: 534c4db — authored as Khushi, no Claude mention)
+
+**Files changed this session (2026-07-09):**
+- `ui/src/pages/Dashboard.tsx` — UTC timestamp fix (LatestTraceCard + EventFeed)
+- `ui/src/App.tsx` — OfflineBanner: --demo → --paper
+- `src/pods/base_pod.py` — _orders_in_flight guard; conviction*3 edge check
+- `src/guardian/news_watchdog.py` — persist seen articles to disk
+- `src/shared/trade_cost_estimator.py` — flat Rs20 commission; round-trip edge check
+- `data/news_seen_articles.json` — created and pre-seeded with 139 stale articles
+
+**UTC timestamp pattern (DO NOT regress):**
+Every page that shows a timestamp from the backend must use this pattern:
+```ts
+function fmtTs(iso: string | null | undefined) {
+  if (!iso) return '—'
+  const utc = iso.endsWith('Z') ? iso : iso + 'Z'
+  return new Date(utc).toLocaleString('en-IN', { day: 'numeric', month: 'short',
+    hour: '2-digit', minute: '2-digit' })
+}
+```
+Python `datetime.utcnow().isoformat()` returns strings WITHOUT 'Z'. JavaScript
+`new Date('2026-07-08T12:40')` (no Z) treats it as LOCAL time → wrong by 5:30h.
+Fix: always append 'Z' before `new Date()`. Already fixed in: Dashboard, Decisions,
+DebateModal, PortfolioManager. If adding a new page with timestamps, apply same fix.
+
+**Trade loss root causes (diagnosed 2026-07-09):**
+- Paper broker balance: Rs413,336 from Rs10,00,000 — 58.7% loss from bugs
+- 1052 trades: 19 wins, 441 losses, 592 open
+- Main causes: (1) stale news replay on restart, (2) Rs20 commission on small
+  positions (0.4-0.8% round-trip), (3) edge check was one-way not round-trip
+- All three fixed. Do NOT reset paper_broker_state.json yet — watch if it improves.
+- If user wants clean slate: delete data/paper_broker_state.json → restarts at Rs10L
+
+**What to do first in next session:**
+- `python main.py --paper` and check Dashboard — live event times should now be IST
+- Watch event pod trade count on Decisions page — should drop (stale news fixed)
+- If still losing, raise event pod min_conviction from 0.7 to 0.8 in event_pod/strategy.py
 
 ### 2026-07-08 — Azure confirmed working, light mode complete
 
