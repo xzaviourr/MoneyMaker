@@ -403,7 +403,14 @@ class NewsWatchdog:
         if sentiment == "neutral":
             return
         direction  = SignalDirection.LONG if sentiment == "positive" else SignalDirection.SHORT
-        conviction = {"EMERGENCY": 0.8, "WARNING": 0.65}.get(analysis.get("severity", "INFO"), 0.55)
+        # Was 0.55 for ordinary (INFO-severity) news — below the 0.65
+        # min_conviction_to_queue bar in signal_aggregator.py, so routine
+        # news-driven ideas were silently dropped before ever reaching a
+        # Room 1 debate. The whole point of the news pipeline is that
+        # anything a real news source flags gets checked (price, trend,
+        # reason) by the debate itself, not pre-filtered out on a severity
+        # guess before it's even looked at.
+        conviction = {"EMERGENCY": 0.8, "WARNING": 0.65}.get(analysis.get("severity", "INFO"), 0.66)
         await self._long_term_desk.ingest_news_signal(
             symbol=symbol, direction=direction, conviction=conviction,
             rationale=f"News: {headline[:150]}",

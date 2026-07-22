@@ -53,6 +53,54 @@ def get_guardian() -> Any:
     return _guardian
 
 
+@router.get("/queue")
+async def get_idea_queue() -> dict:
+    """What's currently lined up waiting for a Room 1 debate (Long-Term Desk),
+    plus each intraday pod's current status — built for manually watching how
+    much is queued/being worked through, not just the end results."""
+    lt_queue: list[dict] = []
+    if _lt_desk is not None:
+        try:
+            items = _lt_desk._aggregator.peek_queue()
+            lt_queue = [
+                {
+                    "symbol":                item.symbol,
+                    "direction":             item.direction.value,
+                    "conviction_score":      round(item.conviction_score, 3),
+                    "supporting_strategies": item.supporting_strategies,
+                    "contradicting_strategies": item.contradicting_strategies,
+                    "queued_at":             item.created_at.isoformat(),
+                    "expires_at":            item.expires_at.isoformat() if item.expires_at else None,
+                }
+                for item in items
+            ]
+        except Exception:
+            lt_queue = []
+
+    intraday_pods: list[dict] = []
+    if _pod_supervisor is not None:
+        try:
+            for pod in _pod_supervisor.pods.values():
+                m = pod.get_metrics()
+                intraday_pods.append({
+                    "pod_id":       pod.config.pod_id,
+                    "name":         pod.config.pod_name,
+                    "state":        pod.config.state.value,
+                    "watchlist":    [sym for sym, _exch in pod.watchlist()],
+                    "open_positions": len(pod._positions),
+                    "trades_today": m.total_trades,
+                    "last_updated": m.updated_at.isoformat(),
+                })
+        except Exception:
+            intraday_pods = []
+
+    return {
+        "long_term_queue_size": len(lt_queue),
+        "long_term_queue":      lt_queue,
+        "intraday_pods":        intraday_pods,
+    }
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _age(ts: float | None) -> str:

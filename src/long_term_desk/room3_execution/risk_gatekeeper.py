@@ -5,6 +5,7 @@ from typing import Any
 
 import structlog
 
+from ...brokers.broker_gateway import BrokerGateway
 from ...shared.config import toml_cfg
 from ...shared.schemas import AllocationPlan
 from ...supervisor.circuit_breaker import CircuitBreaker
@@ -42,10 +43,31 @@ class RiskGatekeeper:
             issues.append("circuit_breaker_active")
             blocked = True
 
-        # Position concentration check
-        pos_pct = (plan.allocated_capital / pillar_total * 100) if pillar_total > 0 else 0
+        # Position concentration check — must include what's already held in
+        # this exact symbol, not just the new tranche being proposed. Each
+        # individual buy used to look small and safe on its own, so the same
+        # stock could get bought repeatedly across separate debate cycles
+        # (the "correlation" check below judges different stocks moving
+        # together, an LLM call — it never verified the deterministic fact
+        # of "how much of this exact symbol do I already own," so COALINDIA
+        # grew to 41% of the long-term pool on 2026-07-20 with every single
+        # tranche individually passing this gate).
+        existing_value = 0.0
+        try:
+            positions = await BrokerGateway.get().get_positions()
+            existing_value = sum(
+                float(p.quantity) * float(p.current_price)
+                for p in positions if p.symbol == plan.symbol
+            )
+        except Exception:
+            pass
+        combined_value = existing_value + plan.allocated_capital
+        pos_pct = (combined_value / pillar_total * 100) if pillar_total > 0 else 0
         if pos_pct > _MAX_SINGLE_POSITION_PCT:
-            issues.append(f"position_too_large: {pos_pct:.1f}% > {_MAX_SINGLE_POSITION_PCT}%")
+            issues.append(
+                f"position_too_large: {pos_pct:.1f}% > {_MAX_SINGLE_POSITION_PCT}% "
+                f"(already hold ₹{existing_value:,.0f} of {plan.symbol})"
+            )
             blocked = True
 
         # Correlation risk from cartographer

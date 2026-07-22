@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { fetchJson, type Decision, type Trade } from '../lib/api'
+import { fetchJson, type Decision, type Trade, type RejectedTrackingResponse } from '../lib/api'
 import { fmtPrice, cn } from '../lib/utils'
 import { DebateModal } from '../components/DebateModal'
 import { TableSkeleton } from '../components/Skeleton'
@@ -282,7 +282,7 @@ export default function DecisionsPage() {
   const selectedPortfolioId = useStore(s => s.selectedPortfolioId)
   const [symbol,       setSymbol]       = useState('')
   const [mode,         setMode]         = useState<'all' | 'demo' | 'paper'>('all')
-  const [tab,          setTab]          = useState<'all' | 'debate' | 'trades'>('debate')
+  const [tab,          setTab]          = useState<'all' | 'debate' | 'trades' | 'rejected'>('debate')
   const [expanded,     setExpanded]     = useState<Set<number>>(new Set())
   const [debateSymbol, setDebateSymbol] = useState<string | null>(null)
 
@@ -305,6 +305,12 @@ export default function DecisionsPage() {
     queryKey:        ['trades', selectedPortfolioId],
     queryFn:         () => fetchJson('/portfolio/trades'),
     refetchInterval: 30_000,
+  })
+
+  const { data: rejectedTracking, isLoading: rLoading } = useQuery<RejectedTrackingResponse>({
+    queryKey:        ['rejected-tracking', selectedPortfolioId],
+    queryFn:         () => fetchJson('/decisions/rejected-tracking'),
+    refetchInterval: 60_000,
   })
 
   const toggleExpand = (i: number) => {
@@ -363,7 +369,7 @@ export default function DecisionsPage() {
         </div>
 
         <div className="flex rounded-lg overflow-hidden border border-gray-700 text-sm">
-          {(['all', 'debate', 'trades'] as const).map(t => (
+          {(['all', 'debate', 'trades', 'rejected'] as const).map(t => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -372,7 +378,7 @@ export default function DecisionsPage() {
                 tab === t ? 'bg-brand-500 text-white' : 'bg-gray-900 text-gray-400 hover:text-white',
               )}
             >
-              {t === 'all' ? 'All Decisions' : t === 'debate' ? 'Debate Summaries' : 'Executed Trades'}
+              {t === 'all' ? 'All Decisions' : t === 'debate' ? 'Debate Summaries' : t === 'trades' ? 'Executed Trades' : 'Rejected Ideas — Outcome'}
             </button>
           ))}
         </div>
@@ -393,6 +399,80 @@ export default function DecisionsPage() {
           {filteredTrades.map((t, i) => <TradeRow key={i} t={t} onViewDebate={setDebateSymbol} />)}
           {!tLoading && filteredTrades.length === 0 && (
             <div className="card text-center text-gray-600 py-8">No trades yet</div>
+          )}
+        </div>
+      )}
+
+      {/* ── rejected tab — what happened to ideas we passed on ─── */}
+      {tab === 'rejected' && (
+        <div className="space-y-4">
+          {rLoading && <TableSkeleton rows={4} cols={5} />}
+          {!rLoading && rejectedTracking && (
+            <>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="card">
+                  <div className="text-xs text-gray-500 mb-1">Rejections Checked</div>
+                  <div className="text-lg font-mono font-bold text-white">{rejectedTracking.summary.checked}</div>
+                </div>
+                <div className="card">
+                  <div className="text-xs text-gray-500 mb-1">Would Have Profited</div>
+                  <div className="text-lg font-mono font-bold text-green-400">{rejectedTracking.summary.profitable}</div>
+                </div>
+                <div className="card">
+                  <div className="text-xs text-gray-500 mb-1">Hit Rate</div>
+                  <div className={cn('text-lg font-mono font-bold', (rejectedTracking.summary.hit_rate ?? 0) > 50 ? 'text-yellow-400' : 'text-gray-300')}>
+                    {rejectedTracking.summary.hit_rate != null ? `${rejectedTracking.summary.hit_rate}%` : '—'}
+                  </div>
+                </div>
+                <div className="card">
+                  <div className="text-xs text-gray-500 mb-1">Tracking Window</div>
+                  <div className="text-lg font-mono font-bold text-white">180 days</div>
+                </div>
+              </div>
+
+              {rejectedTracking.summary.by_room.length > 0 && (
+                <div className="card">
+                  <div className="text-xs text-gray-500 mb-2">Hit rate by which room rejected it</div>
+                  <div className="space-y-1.5">
+                    {rejectedTracking.summary.by_room.map(r => (
+                      <div key={r.room} className="flex items-center gap-2 text-sm">
+                        <span className="w-16 text-gray-400 font-mono">{r.room}</span>
+                        <div className="flex-1 h-4 bg-gray-800 rounded overflow-hidden">
+                          <div className="h-full bg-yellow-600" style={{ width: `${r.hit_rate}%` }} />
+                        </div>
+                        <span className="w-32 text-right text-gray-500 font-mono text-xs">
+                          {r.profitable}/{r.total} ({r.hit_rate}%)
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-2">
+                <div className="text-sm text-gray-500">
+                  {rejectedTracking.rows.length} tracked rejections — price checked daily, up to 180 days
+                </div>
+                {rejectedTracking.rows.map((r, i) => (
+                  <div key={i} className="card flex items-center gap-3 flex-wrap text-sm">
+                    <span className="font-mono text-gray-500 text-xs w-24 shrink-0">{fmtTs(r.rejected_at)}</span>
+                    <span className="font-mono font-bold text-white w-24">{r.symbol}</span>
+                    <span className="text-xs text-gray-500 w-20">{r.room}</span>
+                    <span className="text-xs text-gray-500 flex-1 min-w-[200px] truncate" title={r.rejection_reason ?? ''}>
+                      {r.rejection_reason}
+                    </span>
+                    <span className="font-mono text-gray-400 text-xs">{fmtPrice(r.rejection_price)} → {r.last_price != null ? fmtPrice(r.last_price) : '—'}</span>
+                    <span className={cn('font-mono font-bold text-xs w-16 text-right',
+                      r.pct_change == null ? 'text-gray-600' : r.pct_change > 0 ? 'text-green-400' : 'text-red-400')}>
+                      {r.pct_change != null ? `${r.pct_change >= 0 ? '+' : ''}${r.pct_change.toFixed(1)}%` : '—'}
+                    </span>
+                  </div>
+                ))}
+                {rejectedTracking.rows.length === 0 && (
+                  <div className="card text-center text-gray-600 py-8">No rejections tracked yet — checked daily, first results appear after the next check cycle</div>
+                )}
+              </div>
+            </>
           )}
         </div>
       )}

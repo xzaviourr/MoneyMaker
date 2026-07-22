@@ -7,6 +7,7 @@ import { DebateModal } from './components/DebateModal'
 import { PortfolioSwitcher } from './components/PortfolioSwitcher'
 import Dashboard from './pages/Dashboard'
 import PodsPage from './pages/Pods'
+import QueuePage from './pages/Queue'
 import PositionsPage from './pages/Positions'
 import PortfolioManagerPage from './pages/PortfolioManager'
 import TradesPage from './pages/Trades'
@@ -134,6 +135,7 @@ export default function App() {
             <NavItem to="/flow"      label="Flow"               />
             <NavItem to="/portfolio" label="Portfolio Manager"  />
             <NavItem to="/pods"      label="Pods"               />
+            <NavItem to="/queue"     label="Queue"              />
             <NavItem to="/trades"    label="Trades"             />
             <NavItem to="/reports"   label="Reports"            />
             <NavItem to="/decisions" label="Decisions"          />
@@ -167,6 +169,7 @@ export default function App() {
               <Route path="/positions" element={<PositionsPage />}         />
               <Route path="/flow"      element={<SystemFlow />}            />
               <Route path="/pods"      element={<PodsPage />}              />
+              <Route path="/queue"     element={<QueuePage />}             />
               <Route path="/trades"    element={<TradesPage />}            />
               <Route path="/reports"   element={<ReportsPage />}           />
               <Route path="/decisions" element={<DecisionsPage />}         />
