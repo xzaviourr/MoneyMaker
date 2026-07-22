@@ -146,10 +146,13 @@ Every message is tracked by **FlowTracker** and visible on the Flow dashboard.
 
 ```
 main.py                          ← system entry point (--demo / --paper flags)
-config.toml                      ← all system config (capital, LLM tiers, etc.)
+config.toml                      ← default config (Portfolio 1, ₹10L)
+config.portfolio2.toml           ← Portfolio 2 override (₹5L, stricter risk bar, no Reddit)
+start_all.bat                    ← starts both portfolios + frontend in 3 windows
 .env                             ← Azure credentials (NEVER commit this)
-data/explainability.db           ← SQLite: table=decision_log (agent decisions)
-data/paper_broker_state.json     ← paper broker trade state
+data/explainability.db           ← SQLite: table=decision_log (agent decisions) + rejected_idea_tracking
+data/paper_broker_state.json     ← Portfolio 1 broker state
+data/portfolios/portfolio2/      ← Portfolio 2's own data dir (own state/db, isolated from Portfolio 1)
 data/attributed_trades.json      ← trade attribution records
 
 src/
@@ -158,14 +161,17 @@ src/
     message_bus.py               ← async pub/sub backbone
     flow_tracker.py              ← records every bus message for the dashboard
     market_data_cache.py         ← SQLite-backed Yahoo Finance cache (24h TTL)
-    config.py                    ← loads config.toml + pydantic settings
+    config.py                    ← loads config.toml + pydantic settings; MM_CONFIG_PATH/
+                                    MM_CAPITAL/MM_PORT env overrides for multi-portfolio (added 07-22)
+    data_paths.py                ← DATA_DIR, reads MM_DATA_DIR env var — per-portfolio data isolation (added 07-22)
     service_log.py               ← structured logging helpers
     market_hours.py              ← NSE market hours utilities
-    feature_toggles.py           ← feature flags
-    trade_cost_estimator.py      ← brokerage cost calc
+    feature_toggles.py           ← feature flags; initial state now readable from config.toml [features] (07-22)
+    trade_cost_estimator.py      ← Zerodha-accurate brokerage/STT/GST/tax cost calc
 
   audit/
-    explainability_ledger.py     ← writes/queries decision_log table in explainability.db
+    explainability_ledger.py     ← writes/queries decision_log table; also owns rejected_idea_tracking
+                                    table (added 07-22 — see "Rejected-Idea Tracker" below)
     strategy_memory.py           ← strategy memory store
 
   feeds/
@@ -256,6 +262,8 @@ src/
     parameter_optimizer.py       ← optimises strategy parameters
     regime_adjusted_scorer.py    ← scores strategies per regime
     system_review_agent.py       ← periodic system-level review
+    rejected_idea_tracker.py     ← (NEW 07-22) daily job, re-prices every rejected idea for
+                                    180 days to check if the rejection was justified
 
   api/
     main.py                      ← FastAPI app, registers all routers
@@ -263,17 +271,20 @@ src/
     routes/
       portfolio.py               ← /portfolio/status, /snapshot, /positions
       pods.py                    ← /pods, /pods/{id}, /pods/{id}/command
-      system.py                  ← /system/graph (data lineage for Flow dashboard)
+      system.py                  ← /system/graph (data lineage) + /system/queue (NEW 07-22 —
+                                    live idea queue + intraday pod watchlist/positions)
       feedback.py                ← /feedback/summary, /feedback/review
-      decisions.py               ← /decisions (queries explainability_ledger)
+      decisions.py               ← /decisions (queries explainability_ledger) +
+                                    /decisions/rejected-tracking (NEW 07-22)
       news.py                    ← /news
       logs.py                    ← /logs
       commands.py                ← /commands
     websocket/
-      live_feed.py               ← ws://localhost:8000/ws/live (real-time events)
+      live_feed.py               ← ws://localhost:<port>/ws/live (real-time events; port
+                                    depends on which portfolio process — see Multi-Portfolio)
 
 ui/src/
-  App.tsx                        ← nav bar + routes + ThemeToggle + SymbolFocus
+  App.tsx                        ← nav bar + routes + ThemeToggle + SymbolFocus + PortfolioSwitcher
   main.tsx                       ← theme init (reads localStorage mm-theme before render)
   index.css                      ← Tailwind base + light-mode overrides (html:not(.dark))
   pages/
@@ -281,23 +292,27 @@ ui/src/
     SystemFlow.tsx               ← React Flow data lineage graph
     Pods.tsx                     ← pod list + lifecycle controls
     Positions.tsx                ← open positions (symbols are clickable → global sync)
-    Trades.tsx                   ← trade history (symbols are clickable → global sync)
-    Decisions.tsx                ← agent decisions log (auto-filters by selectedSymbol)
+    Trades.tsx                   ← trade history (charges/tax/net P&L columns, symbols clickable)
+    Decisions.tsx                ← agent decisions log; 4 tabs incl. "Rejected Ideas — Outcome" (NEW 07-22)
     Feedback.tsx                 ← feedback + calibration summary
     PortfolioManager.tsx         ← portfolio manager page
-    Reports.tsx                  ← reports page
+    Reports.tsx                  ← reports page — reworked 07-22, see Session Log
     Logs.tsx                     ← system logs page
+    Queue.tsx                    ← (NEW 07-22) live idea queue, intraday pod watch/positions,
+                                    discussion-room timeline
   components/
     DebateModal.tsx              ← debate viewer: DebateSummaryCard (confrontation view)
                                     + raw agent entries behind toggle
     ErrorBoundary.tsx            ← React error boundary
     Skeleton.tsx                 ← loading skeleton component
     NewsApprovalToast.tsx        ← news approval toast notification
+    PortfolioSwitcher.tsx        ← (NEW 07-22) nav-bar dropdown to switch/add portfolios
   hooks/
-    useLiveFeed.ts               ← WebSocket connection to backend
-    useStore.ts                  ← zustand store: live events + selectedSymbol global state
+    useLiveFeed.ts               ← WebSocket connection to backend; port now follows selected portfolio
+    useStore.ts                  ← zustand store (persisted): live events, selectedSymbol,
+                                    portfolios[] + selectedPortfolioId (multi-portfolio, NEW 07-22)
   lib/
-    api.ts                       ← fetch wrapper (base URL = http://localhost:8000)
+    api.ts                       ← fetch wrapper; base URL now resolves from selected portfolio's port
     utils.ts                     ← cn() and other helpers
 ```
 
@@ -319,7 +334,12 @@ python main.py --paper     # real Azure LLM + paper broker — WORKS (gpt-4.1-mi
 
 **Start frontend** (in /ui):
 ```bash
-npm run dev                # opens at http://localhost:5173
+npm run dev                # opens at http://localhost:3000 (NOT 5173 — this project's Vite is configured for 3000)
+```
+
+**Run both portfolios at once** (see "Multi-Portfolio Support" below):
+```bash
+.\start_all.bat            # opens Portfolio 1, Portfolio 2, and frontend in 3 windows
 ```
 
 **Pages:**
@@ -327,16 +347,25 @@ npm run dev                # opens at http://localhost:5173
 - `/flow`       System Flow — full data-lineage graph
 - `/portfolio`  Portfolio Manager
 - `/pods`       Pod list + lifecycle commands
+- `/queue`      Live Queue & Activity — what's queued for debate, intraday pod status, real-time debate timeline (added 07-22)
 - `/trades`     Trade history
 - `/positions`  Open positions
-- `/decisions`  Agent decision log
+- `/decisions`  Agent decision log (now has a 4th tab: "Rejected Ideas — Outcome", added 07-22)
 - `/feedback`   Feedback and calibration
-- `/reports`    Reports
+- `/reports`    Reports (now shows Running Positions + Rejected-Idea Hit Rate in addition to closed-trade stats)
 - `/logs`       System logs
 
 ---
 
-## Current Status (last updated: 2026-07-13)
+## Current Status (last updated: 2026-07-22)
+
+**Two portfolios now run simultaneously** — Portfolio 1 (₹10L, default config.toml,
+port 8000) and Portfolio 2 (₹5L, config.portfolio2.toml, port 8001), started via
+`start_all.bat` in the project root. See "Multi-Portfolio Support" section below
+for full detail — this is a major structural addition since 07-13.
+
+**Frontend actually runs on port 3000, not 5173** (Vite is configured that way in
+this project — `vite.config.ts`). CLAUDE.md previously said 5173; corrected.
 
 ### Azure OpenAI — WORKING
 - Deployment: `gpt-4.1-mini` on resource `anshul-ai-foundary-resource`
@@ -377,10 +406,26 @@ npm run dev                # opens at http://localhost:5173
       speculative-income tax on every closed trade (see 2026-07-13 log)
 - [x] src/intelligence/ renamed → src/audit/ (explainability_ledger, strategy_memory)
 - [x] src/shared/reddit_feed + rss_news moved → src/feeds/ directory
+- [x] Multi-portfolio support — two OS processes, separate port/capital/data dir
+      via MM_PORT/MM_CAPITAL/MM_DATA_DIR env vars (see "Multi-Portfolio Support" below)
+- [x] Rejected-idea tracker — 180-day re-pricing job + decision_log-adjacent
+      rejected_idea_tracking table + /decisions/rejected-tracking endpoint
+- [x] Live queue/activity visibility — /system/queue endpoint + Queue.tsx page
+- [x] market_movers.py — real-time NSE top-gainer scanner feeding the Long-Term
+      Desk's candidate universe (was previously fixed to ~30 config.toml symbols)
+- [x] Debate cooldown (4h per symbol) — stops the desk re-debating the same
+      stock back-to-back, was previously the main driver of correlation-rejections
+- [x] Capital concentration cap fix — risk_gatekeeper now sums *existing* position
+      value for a symbol before applying the per-position % cap (previously let
+      one symbol reach 41% of a portfolio via many small approved tranches)
+- [x] News conviction threshold fix — default news conviction raised 0.55→0.66 so
+      ordinary news-driven ideas actually clear the 0.65 queue-entry bar
+- [x] opportunity_cost_analyst prompt rewritten to require a specific reason for
+      "wait_for_better_entry" instead of defaulting to it
 
 ### Done — Frontend (UI)
-- [x] All 10 pages: Dashboard, Flow, Portfolio Manager, Pods, Trades, Positions,
-      Decisions, Feedback, Reports, Logs
+- [x] All 11 pages: Dashboard, Flow, Portfolio Manager, Pods, Trades, Positions,
+      Decisions, Feedback, Reports, Logs, Queue (NEW 07-22)
 - [x] Light/dark theme toggle — button in nav bar, persists to localStorage as
       `mm-theme`. main.tsx initializes theme before React renders.
       index.css has `html:not(.dark)` overrides that remap dark Tailwind tokens.
@@ -393,12 +438,23 @@ npm run dev                # opens at http://localhost:5173
 - [x] Skeleton loading components
 - [x] UTC timestamp fix — ALL pages now append 'Z' before parsing ISO strings
       so times display in IST not UTC. Fixed in: Decisions, DebateModal,
-      PortfolioManager, Dashboard (LatestTraceCard + EventFeed live timestamps)
+      PortfolioManager, Dashboard (LatestTraceCard + EventFeed live timestamps), Trades
 - [x] Offline banner shows correct command: python main.py --paper
+- [x] PortfolioSwitcher — nav-bar dropdown, add/switch portfolios, persisted via zustand
+- [x] React Query keys across all 11 data-fetching pages now include
+      `selectedPortfolioId` (was a stale-cache bug — see Session Log 07-22)
+- [x] Reports page reworked — CSV export includes open positions, print/PDF via
+      window.print(), small-sample sections gated behind closed.length >= 5,
+      new Rejected-Idea Hit Rate section
 
 ### Pending — Needs Instructor Action
 - [ ] 5Paisa broker integration (account reactivating — needs Client Code,
       Password, TOTP Secret — goes in .env only, never in code)
+- [ ] VM deployment — SSH to the Azure VM timed out (07-22); VM may be stopped or
+      its dynamic IP changed after a restart. Needs sir to check the Azure Portal —
+      outside what Claude can fix (no Azure access). Once reachable again, the
+      known-good SCP steps are unchanged: transfer everything except `.env` and
+      `node_modules`, create `.env` fresh on the VM by hand.
 
 ### Light Mode — COMPLETE (as of 2026-07-08)
 index.css now has comprehensive `html:not(.dark)` overrides covering:
@@ -417,8 +473,54 @@ If any page still looks bad in light mode, add an override to the bottom of inde
 - [ ] Live backtesting runner (replay historical data through all agents)
 - [ ] Pod auto-promotion (SANDBOX → PROBATION after N profitable days)
 - [ ] Alert system (Telegram/email on drawdown breach or unusual signals)
-- [ ] Production deployment (Docker + cloud hosting)
+- [ ] Production deployment (Docker + cloud hosting) — blocked, see VM item above
 - [ ] ScalpPod and EventPod wiring into PodSupervisor
+- [ ] **CapitalTracker ledger discrepancy (found 07-22, NOT fixed)** — `long_term.deployed`
+      shows ₹14,974 while real open long-term-desk position value is ₹5,95,011. The
+      tracker is likely only debiting/crediting on specific code paths that don't cover
+      every way a position can open (e.g. partial fills, or PositionSizer-approved trades
+      that skip a step that updates the tracker). Do this FIRST next session — audit every
+      call site that mutates `CapitalTracker`'s long_term pillar against every place a
+      long-term position can actually open, and reconcile against `get_positions()`.
+- [ ] **₹6L sitting idle in intraday pods that have never placed a trade** — flagged to
+      user as a real capital-allocation decision (redeploy to long-term desk? loosen
+      intraday entry conditions? leave as reserve?), not a bug to silently patch. Needs
+      user/sir's call before touching intraday pod thresholds further.
+
+---
+
+## Multi-Portfolio Support (added 2026-07-22)
+
+Two portfolios now run as **two separate OS processes** (not in-process multi-tenancy —
+see Session Log 07-22 for why: 84 singleton call sites across 50 files made sharing one
+process too risky). Each process has its own MessageBus, CapitalTracker, BrokerGateway,
+etc. — zero shared state between them except the market-data cache and the
+`news_seen_*.json` dedup files (both intentionally shared so both portfolios see the
+same real prices and don't double-pay LLM calls analyzing the same headline twice).
+
+- **Portfolio 1**: ₹10L, `config.toml`, port 8000, data in `data/` (default, unchanged)
+- **Portfolio 2**: ₹5L, `config.portfolio2.toml`, port 8001, data in
+  `data/portfolios/portfolio2/`, stricter risk bar, Reddit feed off
+
+**Start both + frontend**: `.\start_all.bat` (opens 3 windows)
+
+**Start manually**:
+```powershell
+python main.py --paper                                                 # Portfolio 1
+$env:MM_PORT=8001; $env:MM_CAPITAL=500000; $env:MM_CONFIG_PATH="config.portfolio2.toml"; `
+  $env:MM_DATA_DIR="data/portfolios/portfolio2"; python main.py --paper # Portfolio 2
+cd ui; npm run dev                                                      # one frontend serves both
+```
+
+Switch between them in the UI via the **PortfolioSwitcher** dropdown in the nav bar
+(next to the theme toggle). Adding a third portfolio: start a third process on a new
+port/data dir, then "Add portfolio" in the switcher with that port — no code change
+needed. This was confirmed working end-to-end 07-22: independent balances, independent
+trade history, WebSocket reconnects to the new port on switch, selection persists
+across reloads.
+
+**Known constraint**: both processes share one Azure OpenAI deployment/quota — running
+both in parallel roughly doubles LLM call volume. Not a bug, just watch for throttling.
 
 ---
 
@@ -468,6 +570,160 @@ will automatically switch to 5Paisa when these env vars are present.
 ---
 
 ## Session Log (most recent first)
+
+### 2026-07-22 — Multi-portfolio support, 5 real trading bugs found & fixed,
+### rejected-idea tracker, live queue/activity page, Reports page rework
+
+**Context:** This was a long multi-day session (07-17 through 07-22) spanning several
+distinct threads: sir asked for multiple portfolios running in parallel; the user spent
+a lot of time confused about why trades weren't happening and why the same 2-3 stocks
+kept recurring; two new features were explicitly requested for the user's own analysis;
+and the user needed a presentable daily report to send to sir, which required fixing the
+Reports page rather than faking one.
+
+**1. Multi-portfolio support.** Went into plan mode first because the naive approach
+(thread a portfolio-id through every singleton) touches ~50 files and 84 call sites —
+too risky given CLAUDE.md's own warning that the singleton pattern is the thing most
+likely to break the system silently. Decided instead to run each portfolio as its own
+OS process, differentiated by env vars (`MM_CONFIG_PATH`, `MM_DATA_DIR`, `MM_CAPITAL`,
+`MM_PORT`), which is both lower-risk and a truer test of "can this run independently"
+than sharing one process. Backend: `src/shared/config.py` applies `MM_CAPITAL`/`MM_PORT`
+overrides into the loaded TOML dict right after load, so every existing reader of
+`toml_cfg["capital"]["total_capital"]` / `toml_cfg["api"]["port"]` picks it up with zero
+changes to those call sites. New `src/shared/data_paths.py` exposes `DATA_DIR` (from
+`MM_DATA_DIR`, defaults to `data/`); six files with a hardcoded `Path("data/...")`
+module constant (paper_broker, explainability_ledger, strategy_memory, flow_tracker,
+outcome_attribution_timer, base_pod's per-pod metrics path) were switched to build off
+`DATA_DIR`. Frontend: `useStore.ts` gained a zustand-`persist()`-backed `portfolios[]` +
+`selectedPortfolioId`; `api.ts`'s `base()` now resolves the URL from the selected
+portfolio's port; `useLiveFeed.ts`'s WebSocket URL follows the same selection and
+reconnects on switch; new `PortfolioSwitcher.tsx` component in the nav bar. Created
+`config.portfolio2.toml` (₹5L, stricter risk bar, Reddit off) and `start_all.bat`
+(opens both backends + frontend in 3 windows). User explicitly corrected an early
+framing where I'd proposed differentiating portfolios by fixed example dimensions like
+"Reddit on/off" — clarified this needed to be a **general** per-portfolio config
+capability, which the env-var/TOML-override approach already provides for any
+config.toml key, not just the examples.
+
+**2. queryKey caching bug (found while testing #1).** Switching portfolios in the new
+dropdown showed identical data on both — root cause was that every page's React Query
+`queryKey` was a static array, so switching `selectedPortfolioId` never triggered a
+refetch against the new port. Fixed by adding `selectedPortfolioId` to the queryKey in
+all 11 data-fetching files (Dashboard, Decisions, Feedback, Logs, Pods, PortfolioManager,
+Positions, Reports, SystemFlow, Trades, DebateModal).
+
+**3. Capital concentration bug (real bug, found investigating "why does COALINDIA keep
+getting bought").** `risk_gatekeeper.py`'s position-size check only evaluated the new
+tranche being proposed in isolation against the pillar cap — it never looked at value
+already held in that same symbol. Ten separately-approved small purchases let one
+position reach 41% of a portfolio, which the guardian was supposed to prevent. Fixed by
+summing existing position value for the exact symbol via `BrokerGateway.get().get_positions()`
+before computing `pos_pct`. User confirmed this had happened before too and asked for it
+to go in the report to sir.
+
+**4. News conviction threshold mismatch (real bug, found investigating "why only ~30
+stocks ever get considered" — a month-long complaint).** `news_watchdog.py` was scoring
+ordinary news at conviction 0.55, below the 0.65 `min_conviction_to_queue` bar, so most
+news-driven ideas were silently dropped before ever reaching the debate rooms — the
+long-term desk's candidate pool was effectively capped near the static `config.toml`
+universe regardless of what news was actually happening. Fixed by raising the default
+score for non-emergency severities to 0.66. Related, same investigation: added
+`src/long_term_desk/market_movers.py`, a real-time NSE top-gainer scanner (via
+yfinance's unofficial `yf.EquityQuery`/`yf.screen()`, filtered on %change, volume, and
+market cap) that's merged into `_scan_universe()` alongside the static watchlist — this
+was the direct fix for "why is this limited to 30 stocks," since the static list is now
+supplemented with whatever's actually moving that day.
+
+**5. No-memory re-debate loop (real bug, same investigation — this is what was driving
+up "too correlated" rejections and burning LLM calls on the same 2-3 stocks).** The
+desk had no memory of which symbols it had just debated, so the same idea could be
+re-queued and re-argued repeatedly within one scan cycle. Fixed with a 4-hour
+per-symbol cooldown (`_last_debated: dict[str, datetime]`, config key
+`debate_cooldown_hours`, default 4) checked immediately after popping an idea off the
+queue in `long_term_desk.py`.
+
+**6. Overly-cautious allocation prompt.** While in the same code, noticed
+`opportunity_cost_analyst.py`'s system prompt defaulted to recommending
+"wait_for_better_entry" without requiring a specific justification — rewrote it to bias
+toward "deploy" and demand a concrete reason to wait instead.
+
+**7. Rejected-idea outcome tracker — new feature, explicitly requested.** User wants to
+see, for every idea Room 2/3 rejected, whether the rejection was actually justified.
+Built: `explainability_ledger.py` gained a `rejected_idea_tracking` table plus
+`record_rejection()` / `get_active_rejections()` / `update_rejection_price()` /
+`query_rejected_tracking()`; both NOT-EXECUTED exit points in `long_term_desk.py` now
+call a new `_track_rejection()` helper tagged with which room rejected it; new
+`src/feedback/rejected_idea_tracker.py` is a daily background job that re-prices every
+open rejection for up to 180 days (user confirmed "180 days is fine") to see if the
+stock would have profited anyway; wired into `main.py` alongside the other feedback
+engines; new `GET /decisions/rejected-tracking` endpoint; new 4th tab "Rejected Ideas —
+Outcome" on the Decisions page. User caught a real bug in this feature directly — the
+rejection date wasn't rendering ("I can't see the date at which it got rejected") —
+fixed by adding `fmtTs(r.rejected_at)` to the row.
+
+**8. Live queue/activity page — new feature, explicitly requested.** User wants to see
+"how many trades are getting discussed, lined up, and in queue... and at what time they
+were hit in the discussion room" for their own analysis. Built: new `GET /system/queue`
+endpoint exposing the Long-Term Desk's live idea queue (`_aggregator.peek_queue()`) and
+each intraday pod's current watchlist/open positions (`pod.watchlist()` / `pod._positions`);
+new `Queue.tsx` page with three sections — Long-Term Desk queue table, Intraday Pods
+table, and a Discussion Room timeline; added to nav/routes in `App.tsx`.
+
+**9. Reports page rework.** User shared an actual printed PDF of the existing Reports
+page before sending it to sir — it was dominated by "not enough data" placeholders and
+looked, in the user's words, "really unbalanced." Rather than building a one-off report
+document, fixed the real page: removed the dead `downloadTradesCsv` in favor of
+`downloadPositionsCsv()` + `downloadCombinedCsv()` (CSV export now includes open
+positions, not just closed trades); added a print/PDF button using `window.print()` +
+`@media print` CSS (no new dependency); gated the statistically-meaningless deep-stats
+sections behind `closed.length >= 5` so they don't render misleading numbers from a
+handful of trades; added a new "Rejected-Idea Hit Rate" section pulling from the
+tracker built in item 7. A one-off HTML mockup was drafted first to align on layout/tone
+before the real page was edited — see
+`C:\Users\Karan\AppData\Local\Temp\claude\...\scratchpad\daily_report.html` if a
+similar one-off report is ever needed again, but the actual Reports page in the app is
+now the real source of truth.
+
+**10. VM deployment (blocked, not a code issue).** Walked the user step-by-step through
+SSH-key setup and SCP transfer to the Azure VM sir provisioned, with repeated explicit
+guardrails: never paste credentials into chat, exclude `.env` and `node_modules` from
+the transfer. One real incident: a `Move-Item .env .env.local-backup` step (used to
+keep `.env` out of the `scp -r`) never got renamed back because the `scp` command
+failed partway through — diagnosed via the startup error ("Could not reach Azure:
+Request URL is missing an 'http://' or 'https://' protocol") and fixed with
+`mv .env.local-backup .env`. Later in the session, SSH started timing out entirely —
+diagnosed as either the VM being stopped or its dynamic IP having changed after a
+restart, both of which require sir's Azure Portal access to fix. Flagged clearly to the
+user as outside what I can resolve; deployment is paused until sir confirms VM state.
+
+**11. GitHub push.** Walked the user through `git add` / `commit` / `push` manually by
+hand (per the user's explicit preference — see [[feedback_git]] memory — Claude never
+runs these commands itself), with commit messages that don't mention Claude, to
+`https://github.com/xzaviourr/MoneyMaker`, branch `master`. User is a collaborator on
+the repo already.
+
+**Known bug found, NOT fixed this session (do this first next time):**
+`CapitalTracker`'s `long_term.deployed` figure reads ₹14,974 while the real value of
+open long-term-desk positions is ₹5,95,011 — a huge discrepancy. Root cause not yet
+diagnosed; likely some code path that opens/sizes a long-term position without going
+through whatever call updates the tracker. See "Multi-Portfolio Support" section /
+Pending — Future Work above for the full note.
+
+**Also unresolved, not a bug — a decision needed from user/sir:** roughly ₹6L sits idle
+across intraday pods that have never placed a single trade. Whether to redeploy that
+capital to the long-term desk, loosen intraday entry thresholds, or leave it as reserve
+is a real allocation call, not something to silently patch.
+
+**What to do first in next session:**
+- Fix the CapitalTracker ledger discrepancy (see above) — this affects what gets
+  reported to sir as "capital deployed" and is currently wrong.
+- Check whether the 4-hour debate cooldown + market-movers scanner + rewritten
+  opportunity-cost prompt have actually increased trade diversity/volume over the days
+  since 07-22 — this was unverified/theoretical as of this session, only confirmed to
+  not crash, not confirmed to fix the underlying "too few trades" complaint.
+- Ask if sir has confirmed the VM is running / provided a current IP — deployment is
+  blocked on that.
+- Decide (with user/sir) what to do about the idle ₹6L in intraday pods.
 
 ### 2026-07-13 — Zerodha-accurate transaction costs + capital gains tax
 

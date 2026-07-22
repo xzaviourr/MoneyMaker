@@ -68,6 +68,32 @@ export interface PodInfo {
   metrics:        Record<string, unknown>
 }
 
+export interface QueueItem {
+  symbol:                    string
+  direction:                 string
+  conviction_score:          number
+  supporting_strategies:     string[]
+  contradicting_strategies:  string[]
+  queued_at:                 string
+  expires_at:                string | null
+}
+
+export interface IntradayPodStatus {
+  pod_id:         string
+  name:           string
+  state:          string
+  watchlist:      string[]
+  open_positions: number
+  trades_today:   number
+  last_updated:   string
+}
+
+export interface QueueResponse {
+  long_term_queue_size: number
+  long_term_queue:      QueueItem[]
+  intraday_pods:        IntradayPodStatus[]
+}
+
 export interface Trade {
   trade_id:    string
   symbol:      string
@@ -97,6 +123,28 @@ export interface Decision {
   outcome:   string | null
   inputs:    string | null
   outputs:   string | null
+}
+
+export interface RejectedTrackingRow {
+  symbol:           string
+  rejected_at:      string
+  rejection_price:  number
+  rejection_reason: string | null
+  room:             string | null
+  last_checked_at:  string | null
+  last_price:       number | null
+  pct_change:       number | null
+  still_tracking:   number
+}
+
+export interface RejectedTrackingResponse {
+  rows: RejectedTrackingRow[]
+  summary: {
+    checked:    number
+    profitable: number
+    hit_rate:   number | null
+    by_room:    { room: string; total: number; profitable: number; hit_rate: number }[]
+  }
 }
 
 export interface FeedbackSummary {

@@ -1,6 +1,6 @@
 import { useState, useMemo, useRef, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { fetchJson, type Trade, type CapitalSnapshot } from '../lib/api'
+import { fetchJson, type Trade, type CapitalSnapshot, type Position, type RejectedTrackingResponse } from '../lib/api'
 import { fmtInr, fmtPrice, cn } from '../lib/utils'
 import { useStore } from '../hooks/useStore'
 
@@ -85,31 +85,75 @@ function csvCell(v: string | number): string {
   const s = String(v)
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
 }
-function downloadTradesCsv(trades: Trade[], periodLabel: string) {
+function triggerCsvDownload(cols: string[], rows: (string | number)[][], filename: string) {
+  const csv = [cols, ...rows].map(r => r.map(csvCell).join(',')).join('\n')
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+  const url  = URL.createObjectURL(blob)
+  const a    = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+function downloadPositionsCsv(positions: Position[]) {
   const cols = [
+    'symbol', 'quantity', 'entry_price', 'current_price', 'unrealized_pnl',
+    'unrealized_pnl_pct', 'stop_loss', 'take_profit', 'opened_at', 'source',
+  ]
+  const rows = positions.map(p => [
+    p.symbol,
+    p.quantity,
+    p.average_price,
+    p.current_price ?? '',
+    p.unrealized_pnl,
+    p.unrealized_pnl_pct ?? '',
+    p.stop_loss ?? '',
+    p.take_profit ?? '',
+    p.opened_at ?? '',
+    p.source_pod || p.source_desk || '',
+  ])
+  const stamp = new Date().toISOString().slice(0, 10)
+  triggerCsvDownload(cols, rows, `moneymaker-open-positions-${stamp}.csv`)
+}
+function downloadCombinedCsv(closedTrades: Trade[], positions: Position[], periodLabel: string) {
+  // One file, two clearly separated sections — a blank line + a section
+  // header row between them, rather than mixing open (unrealized, still
+  // moving) and closed (realized, final) rows into the same table where
+  // they could be misread as directly comparable.
+  const closedCols = [
     'timestamp', 'symbol', 'side', 'quantity', 'entry_price', 'exit_price',
     'charges', 'tax', 'gross_pnl', 'net_pnl', 'source',
   ]
-  const rows = trades.map(t => [
-    t.timestamp,
-    t.symbol,
-    t.side,
-    t.quantity,
-    t.entry_price ?? '',
-    t.price,
-    t.charges ?? '',
-    t.tax ?? '',
-    t.pnl,
-    t.net_pnl ?? t.pnl,
-    t.source_pod || t.source_desk || '',
+  const closedRows = closedTrades.map(t => [
+    t.timestamp, t.symbol, t.side, t.quantity, t.entry_price ?? '', t.price,
+    t.charges ?? '', t.tax ?? '', t.pnl, t.net_pnl ?? t.pnl, t.source_pod || t.source_desk || '',
   ])
-  const csv = [cols, ...rows].map(r => r.map(csvCell).join(',')).join('\n')
+  const openCols = [
+    'symbol', 'quantity', 'entry_price', 'current_price', 'unrealized_pnl',
+    'unrealized_pnl_pct', 'stop_loss', 'take_profit', 'opened_at', 'source',
+  ]
+  const openRows = positions.map(p => [
+    p.symbol, p.quantity, p.average_price, p.current_price ?? '', p.unrealized_pnl,
+    p.unrealized_pnl_pct ?? '', p.stop_loss ?? '', p.take_profit ?? '', p.opened_at ?? '',
+    p.source_pod || p.source_desk || '',
+  ])
+
+  const lines = [
+    `CLOSED TRADES (realized) — ${periodLabel}`,
+    [closedCols, ...closedRows].map(r => r.map(csvCell).join(',')).join('\n'),
+    '',
+    'OPEN POSITIONS (unrealized, still moving)',
+    [openCols, ...openRows].map(r => r.map(csvCell).join(',')).join('\n'),
+  ]
+  const csv = lines.join('\n')
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
   const url  = URL.createObjectURL(blob)
   const a    = document.createElement('a')
   const stamp = new Date().toISOString().slice(0, 10)
   a.href = url
-  a.download = `moneymaker-report-${periodLabel.toLowerCase().replace(/\s+/g, '-')}-${stamp}.csv`
+  a.download = `moneymaker-full-report-${periodLabel.toLowerCase().replace(/\s+/g, '-')}-${stamp}.csv`
   document.body.appendChild(a)
   a.click()
   document.body.removeChild(a)
@@ -568,6 +612,34 @@ export default function ReportsPage() {
     queryFn: () => fetchJson('/portfolio/snapshot'),
     refetchInterval: 30_000,
   })
+  const { data: openPositions = [] } = useQuery<Position[]>({
+    queryKey: ['report-positions', selectedPortfolioId],
+    queryFn: () => fetchJson('/portfolio/positions'),
+    refetchInterval: 10_000,
+  })
+  const { data: rejectedTracking } = useQuery<RejectedTrackingResponse>({
+    queryKey: ['report-rejected-tracking', selectedPortfolioId],
+    queryFn: () => fetchJson('/decisions/rejected-tracking'),
+    refetchInterval: 60_000,
+  })
+
+  // ── Running (open) position stats — kept entirely separate from the closed-
+  // trade stats below. Realized P&L (closed) and unrealized P&L (open) are
+  // never summed into one number — one is locked in, the other still moves.
+  const openUnrealizedPnl = useMemo(
+    () => openPositions.reduce((s, p) => s + parseFloat(p.unrealized_pnl || '0'), 0),
+    [openPositions]
+  )
+  const openDeployed = useMemo(
+    () => openPositions.reduce((s, p) => s + p.quantity * parseFloat(p.average_price), 0),
+    [openPositions]
+  )
+  const openAvgDaysHeld = useMemo(() => {
+    if (!openPositions.length) return 0
+    const now = Date.now()
+    const days = openPositions.map(p => p.opened_at ? (now - new Date(p.opened_at.endsWith('Z') ? p.opened_at : p.opened_at + 'Z').getTime()) / 86_400_000 : 0)
+    return days.reduce((s, d) => s + d, 0) / days.length
+  }, [openPositions])
 
   const start = periodStart(period)
   const trades = useMemo(() => allTrades.filter(t => inPeriod(t, start)), [allTrades, period, start])
@@ -702,7 +774,15 @@ export default function ReportsPage() {
 
   return (
     <>
-      <style>{`@keyframes ri{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}.ri{animation:ri 0.3s ease both}`}</style>
+      <style>{`
+        @keyframes ri{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}.ri{animation:ri 0.3s ease both}
+        @media print {
+          nav, header, .no-print { display: none !important; }
+          body, .bg-\\[\\#090d13\\] { background: #fff !important; color: #000 !important; }
+          * { color: #000 !important; border-color: #ccc !important; }
+          .card, [class*="bg-[#0d1117]"] { background: #fff !important; border: 1px solid #ccc !important; }
+        }
+      `}</style>
 
       {/* ── HEADER + PERIOD SELECTOR ────────────────────────────────────────── */}
       <div className="-mx-6 -mt-6 px-6 py-3 border-b border-white/[0.06] bg-[#090d13] flex items-center justify-between gap-4 flex-wrap">
@@ -727,12 +807,19 @@ export default function ReportsPage() {
             ))}
           </div>
           <button
-            onClick={() => downloadTradesCsv(closed, PERIODS.find(p => p.key === period)?.label ?? period)}
-            disabled={closed.length === 0}
-            title={closed.length === 0 ? 'No closed trades in this period yet' : 'Download this period as CSV'}
+            onClick={() => downloadCombinedCsv(closed, openPositions, PERIODS.find(p => p.key === period)?.label ?? period)}
+            disabled={closed.length === 0 && openPositions.length === 0}
+            title="Download closed trades and open positions together, in one CSV"
             className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-white/[0.08] bg-[#0d1117] text-xs font-semibold text-gray-400 hover:text-white hover:border-white/[0.16] transition-all disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-gray-400 disabled:hover:border-white/[0.08]"
           >
-            ↓ Download CSV
+            ↓ Download Full Report (CSV)
+          </button>
+          <button
+            onClick={() => window.print()}
+            title="Print, or save as PDF from the print dialog"
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-white/[0.08] bg-[#0d1117] text-xs font-semibold text-gray-400 hover:text-white hover:border-white/[0.16] transition-all"
+          >
+            🖶 Print / Save as PDF
           </button>
         </div>
       </div>
@@ -744,6 +831,128 @@ export default function ReportsPage() {
           <div className="flex items-center gap-3 rounded-lg border border-yellow-900/40 bg-yellow-950/20 px-4 py-2.5 text-xs text-yellow-500 ri">
             <span className="text-base">⚠</span>
             <span>Statistical metrics below are based on <strong>{closed.length}</strong> trades — confidence improves significantly beyond 100. Treat Sharpe, T-stat, and P-value as directional only.</span>
+          </div>
+        )}
+
+        {/* ── RUNNING POSITIONS — separate from closed-trade stats below.       */}
+        {/* Unrealized P&L here is never added to the realized P&L further      */}
+        {/* down the page — one is still moving, the other is locked in.        */}
+        {openPositions.length > 0 && (
+          <div className="ri">
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-[10px] uppercase tracking-[0.18em] text-gray-600 font-semibold">
+                Running Positions — Unrealized (not yet closed)
+              </div>
+              <button
+                onClick={() => downloadPositionsCsv(openPositions)}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded border border-white/[0.08] bg-[#0d1117] text-[10px] font-semibold text-gray-400 hover:text-white hover:border-white/[0.16] transition-all"
+              >
+                ↓ Download CSV
+              </button>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+              <div className="rounded-lg border border-white/[0.08] bg-[#0d1117] px-4 py-3">
+                <div className="text-[10px] uppercase tracking-wider text-gray-600 mb-1">Open Positions</div>
+                <div className="font-mono font-bold text-lg text-white">{openPositions.length}</div>
+              </div>
+              <div className="rounded-lg border border-white/[0.08] bg-[#0d1117] px-4 py-3">
+                <div className="text-[10px] uppercase tracking-wider text-gray-600 mb-1">Unrealized P&L</div>
+                <div className={cn('font-mono font-bold text-lg', openUnrealizedPnl >= 0 ? 'text-green-400' : 'text-red-400')}>
+                  {openUnrealizedPnl >= 0 ? '+' : ''}{fmtInr(openUnrealizedPnl)}
+                </div>
+              </div>
+              <div className="rounded-lg border border-white/[0.08] bg-[#0d1117] px-4 py-3">
+                <div className="text-[10px] uppercase tracking-wider text-gray-600 mb-1">Capital Deployed</div>
+                <div className="font-mono font-bold text-lg text-white">{fmtCr(openDeployed)}</div>
+              </div>
+              <div className="rounded-lg border border-white/[0.08] bg-[#0d1117] px-4 py-3">
+                <div className="text-[10px] uppercase tracking-wider text-gray-600 mb-1">Avg. Days Held</div>
+                <div className="font-mono font-bold text-lg text-white">{openAvgDaysHeld.toFixed(1)}</div>
+              </div>
+            </div>
+            <div className="rounded-lg border border-white/[0.08] overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left text-gray-600 uppercase tracking-wider border-b border-white/[0.06]">
+                    <th className="px-3 py-2 font-semibold">Symbol</th>
+                    <th className="px-3 py-2 font-semibold text-right">Entry</th>
+                    <th className="px-3 py-2 font-semibold text-right">Current</th>
+                    <th className="px-3 py-2 font-semibold text-right">Unrealized %</th>
+                    <th className="px-3 py-2 font-semibold text-right">Days Held</th>
+                    <th className="px-3 py-2 font-semibold text-right">Distance to Exit</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {openPositions.map(p => {
+                    const entry   = parseFloat(p.average_price)
+                    const current = p.current_price ? parseFloat(p.current_price) : entry
+                    const pnlPct  = p.unrealized_pnl_pct ?? 0
+                    const days    = p.opened_at
+                      ? (Date.now() - new Date(p.opened_at.endsWith('Z') ? p.opened_at : p.opened_at + 'Z').getTime()) / 86_400_000
+                      : 0
+                    const stop   = p.stop_loss ? parseFloat(p.stop_loss) : null
+                    const target = p.take_profit ? parseFloat(p.take_profit) : null
+                    const distToStop   = stop ? ((current - stop) / current) * 100 : null
+                    const distToTarget = target ? ((target - current) / current) * 100 : null
+                    const nearer = distToStop != null && distToTarget != null
+                      ? (distToStop < distToTarget ? { label: 'stop', pct: distToStop } : { label: 'target', pct: distToTarget })
+                      : distToStop != null ? { label: 'stop', pct: distToStop }
+                      : distToTarget != null ? { label: 'target', pct: distToTarget }
+                      : null
+                    return (
+                      <tr key={p.id} className="border-b border-white/[0.04] last:border-0">
+                        <td className="px-3 py-2 font-mono font-semibold text-white">{p.symbol}</td>
+                        <td className="px-3 py-2 font-mono text-right text-gray-400">{fmtPrice(entry)}</td>
+                        <td className="px-3 py-2 font-mono text-right text-gray-400">{fmtPrice(current)}</td>
+                        <td className={cn('px-3 py-2 font-mono text-right font-semibold', pnlPct >= 0 ? 'text-green-400' : 'text-red-400')}>
+                          {pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(2)}%
+                        </td>
+                        <td className="px-3 py-2 font-mono text-right text-gray-500">{days.toFixed(1)}</td>
+                        <td className="px-3 py-2 font-mono text-right text-gray-500">
+                          {nearer ? `${nearer.pct.toFixed(1)}% from ${nearer.label}` : '—'}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* ── REJECTED-IDEA HIT RATE — real sample size even when trade count  */}
+        {/* is still small, since it's built from every rejection, not just    */}
+        {/* the handful of trades that made it through.                       */}
+        {rejectedTracking && rejectedTracking.summary.checked > 0 && (
+          <div className="ri">
+            <div className="text-[10px] uppercase tracking-[0.18em] text-gray-600 font-semibold mb-2">
+              Rejected-Idea Hit Rate — Is the Caution Justified?
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="rounded-lg border border-white/[0.08] bg-[#0d1117] px-4 py-3">
+                <div className="text-[10px] uppercase tracking-wider text-gray-600 mb-1">Rejections Checked</div>
+                <div className="font-mono font-bold text-lg text-white">{rejectedTracking.summary.checked}</div>
+              </div>
+              <div className="rounded-lg border border-white/[0.08] bg-[#0d1117] px-4 py-3">
+                <div className="text-[10px] uppercase tracking-wider text-gray-600 mb-1">Would Have Profited</div>
+                <div className="font-mono font-bold text-lg text-green-400">{rejectedTracking.summary.profitable}</div>
+              </div>
+              <div className="rounded-lg border border-white/[0.08] bg-[#0d1117] px-4 py-3">
+                <div className="text-[10px] uppercase tracking-wider text-gray-600 mb-1">Hit Rate</div>
+                <div className="font-mono font-bold text-lg text-white">
+                  {rejectedTracking.summary.hit_rate != null ? `${rejectedTracking.summary.hit_rate}%` : '—'}
+                </div>
+              </div>
+              <div className="rounded-lg border border-white/[0.08] bg-[#0d1117] px-4 py-3">
+                <div className="text-[10px] uppercase tracking-wider text-gray-600 mb-1">Tracking Window</div>
+                <div className="font-mono font-bold text-lg text-white">180 days</div>
+              </div>
+            </div>
+            <div className="text-xs text-gray-500 mt-2">
+              A low hit rate means rejections are usually correct — a high one would mean the
+              system is too cautious and missing real opportunities. Full breakdown by room on
+              the Decisions page.
+            </div>
           </div>
         )}
 
@@ -866,6 +1075,13 @@ export default function ReportsPage() {
                 accent={ACCENT.blue} />
             </div>
 
+            {/* Sharpe/Sortino/equity-curve/hold-time/etc. are all statistically
+                meaningless below a real sample — printing 4+ sections that just
+                say "need 2+ trades" reads as broken, not honest. Collapse them
+                into one plain notice until there's enough to actually say
+                something, instead of many empty-looking widgets. */}
+            {closed.length >= 5 ? (
+            <>
             {/* ── HEATMAP + HISTOGRAM ──────────────────────────────────────── */}
             <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4">
               <div className="rounded-xl border border-white/[0.06] bg-[#0d1117] p-5">
@@ -1132,6 +1348,16 @@ export default function ReportsPage() {
                       </tr>
                     </tfoot>
                   </table>
+                </div>
+              </div>
+            )}
+            </>
+            ) : (
+              <div className="rounded-xl border border-white/[0.06] bg-[#0d1117] p-6 text-center">
+                <div className="text-xs text-gray-500">
+                  Deeper statistics (equity curve, Sharpe/Sortino, hold-time analysis, P&L by pod/symbol)
+                  need a real sample to mean anything — showing again once there are at least 5 closed trades
+                  (currently {closed.length}). The trade log below is still the real, current data.
                 </div>
               </div>
             )}

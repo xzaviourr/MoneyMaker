@@ -70,6 +70,7 @@ from src.feedback import (
     OutcomeAttributionTimer,
     RegimeAdjustedScorer,
     SystemReviewAgent,
+    RejectedIdeaTracker,
 )
 from src.api.main import app
 from src.api.routes.pods import set_pod_supervisor
@@ -377,6 +378,9 @@ async def _boot(paper: bool = False, api_only: bool = False, demo: bool = False)
 
     attr_timer = OutcomeAttributionTimer(attribution_engine)
     await attr_timer.start()
+
+    rejected_tracker = RejectedIdeaTracker()
+    await rejected_tracker.start()
 
     scorer    = RegimeAdjustedScorer(analyzer)
     optimizer = ParameterOptimizer(analyzer)

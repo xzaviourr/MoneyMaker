@@ -13,6 +13,7 @@ One iteration:
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta
 from typing import Optional
 
 import structlog
@@ -87,6 +88,17 @@ class LongTermDesk:
         self._bus        = MessageBus.get()
         self._running    = False
 
+        # Without this, a stock that still looks attractive gets treated as a
+        # brand new idea every single scan cycle (every 10 min) — no memory
+        # that it was just fully debated an hour ago. That's what let
+        # COALINDIA get re-debated and re-bought 10 times in one day. This
+        # doesn't block a stock forever, just stops it coming back around
+        # faster than a real thesis could plausibly change.
+        self._last_debated: dict[str, datetime] = {}
+        self._debate_cooldown = timedelta(
+            hours=int(toml_cfg.get("long_term_desk", {}).get("debate_cooldown_hours", 4))
+        )
+
     async def start(self) -> None:
         self._running = True
         log.info("lt_desk.started", universe_size=len(self._universe))
@@ -108,9 +120,23 @@ class LongTermDesk:
             await asyncio.sleep(self._scan_interval)
 
     async def _scan_universe(self) -> None:
-        log.info("lt_desk.scanning", symbols=len(self._universe))
+        # The static config.toml universe is the guaranteed baseline — real
+        # top-movers are added on top of it each scan, not instead of it, so
+        # the candidate pool isn't limited to the same fixed 30 names every
+        # single day. Best-effort: never lets a screener failure block the
+        # scan of the real universe.
+        movers: list[str] = []
+        try:
+            from .market_movers import fetch_top_movers
+            loop = asyncio.get_event_loop()
+            movers = await loop.run_in_executor(None, fetch_top_movers)
+        except Exception:
+            log.exception("lt_desk.movers_fetch_error")
+
+        scan_symbols = list(self._universe) + [m for m in movers if m not in self._universe]
+        log.info("lt_desk.scanning", symbols=len(scan_symbols), movers_added=len(movers))
         tasks = []
-        for symbol in self._universe:
+        for symbol in scan_symbols:
             for strategy in self._strategies:
                 tasks.append(self._run_strategy(strategy, symbol))
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -166,8 +192,15 @@ class LongTermDesk:
         if not idea:
             return
 
+        last = self._last_debated.get(idea.symbol)
+        if last and datetime.utcnow() - last < self._debate_cooldown:
+            log.info("lt_desk.idea_on_cooldown", symbol=idea.symbol,
+                     next_eligible=(last + self._debate_cooldown).isoformat())
+            return
+
         log.info("lt_desk.processing_idea",
                  symbol=idea.symbol, conviction=idea.conviction_score)
+        self._last_debated[idea.symbol] = datetime.utcnow()
 
         # ── Room 1 ────────────────────────────────────────────────────────
         from ..audit.explainability_ledger import ExplainabilityLedger
@@ -299,6 +332,7 @@ class LongTermDesk:
             await self._record_outcome(
                 idea.symbol, f"NOT EXECUTED — {self._alloc_chair.last_skip_reason}"
             )
+            await self._track_rejection(idea.symbol, current_price, self._alloc_chair.last_skip_reason, "room2")
             return
 
         # ── Room 3 ────────────────────────────────────────────────────────
@@ -336,7 +370,9 @@ class LongTermDesk:
             )
         else:
             await CapitalTracker.get().release_lt_desk(idea.symbol, alloc_plan.allocated_capital)
-            await self._record_outcome(idea.symbol, f"NOT EXECUTED — {exec_plan.reason or exec_plan.status}")
+            reason = exec_plan.reason or exec_plan.status
+            await self._record_outcome(idea.symbol, f"NOT EXECUTED — {reason}")
+            await self._track_rejection(idea.symbol, current_price, reason, "room3")
 
     async def _record_outcome(self, symbol: str, outcome: str) -> None:
         from ..audit.explainability_ledger import ExplainabilityLedger
@@ -344,6 +380,18 @@ class LongTermDesk:
             await ExplainabilityLedger.get().update_outcome(symbol, "room1.committee_chair", outcome)
         except Exception:
             log.exception("lt_desk.record_outcome_failed", symbol=symbol)
+
+    async def _track_rejection(self, symbol: str, price: float, reason: str, room: str) -> None:
+        """Starts tracking a rejected idea's real price so we can later tell
+        whether the rejection was a good call or missed opportunity — see
+        rejected_idea_tracker.py for the daily check that follows up."""
+        if price <= 0:
+            return
+        from ..audit.explainability_ledger import ExplainabilityLedger
+        try:
+            await ExplainabilityLedger.get().record_rejection(symbol, price, reason, room)
+        except Exception:
+            log.exception("lt_desk.track_rejection_failed", symbol=symbol)
 
     async def _get_current_price(self, symbol: str) -> float:
         try:

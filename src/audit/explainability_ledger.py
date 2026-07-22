@@ -72,7 +72,90 @@ class ExplainabilityLedger:
         self._conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_agent ON decision_log(agent_id)
         """)
+        # Tracks what happened to ideas we rejected — the debate pipeline only
+        # ever recorded outcomes for what it BOUGHT, so there was no way to
+        # tell whether the rejections were good calls or missed opportunity.
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS rejected_idea_tracking (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol           TEXT    NOT NULL,
+                rejected_at      TEXT    NOT NULL,
+                rejection_price  REAL    NOT NULL,
+                rejection_reason TEXT,
+                room             TEXT,
+                last_checked_at  TEXT,
+                last_price       REAL,
+                pct_change       REAL,
+                still_tracking   INTEGER NOT NULL DEFAULT 1
+            )
+        """)
+        self._conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_rejected_tracking_active
+            ON rejected_idea_tracking(still_tracking)
+        """)
         self._conn.commit()
+
+    async def record_rejection(
+        self, symbol: str, rejection_price: float, rejection_reason: str, room: str,
+    ) -> None:
+        """Called every time an idea is rejected (Room 2 or Room 3), so its
+        actual outcome can be checked later — see rejected_idea_tracker.py."""
+        async with self._lock:
+            await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: (
+                    self._conn.execute("""
+                        INSERT INTO rejected_idea_tracking
+                            (symbol, rejected_at, rejection_price, rejection_reason, room)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (symbol, datetime.utcnow().isoformat(), rejection_price, rejection_reason, room)),
+                    self._conn.commit(),
+                )
+            )
+
+    async def get_active_rejections(self) -> list[dict[str, Any]]:
+        """Rejections still within their tracking window, for the daily price-check job."""
+        async with self._lock:
+            rows = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: self._conn.execute("""
+                    SELECT id, symbol, rejected_at, rejection_price
+                    FROM rejected_idea_tracking WHERE still_tracking=1
+                """).fetchall()
+            )
+        return [{"id": r[0], "symbol": r[1], "rejected_at": r[2], "rejection_price": r[3]} for r in rows]
+
+    async def update_rejection_price(self, row_id: int, price: float, still_tracking: bool) -> None:
+        async with self._lock:
+            await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: (
+                    self._conn.execute("""
+                        UPDATE rejected_idea_tracking
+                        SET last_checked_at=?, last_price=?,
+                            pct_change=(? - rejection_price) / rejection_price * 100,
+                            still_tracking=?
+                        WHERE id=?
+                    """, (datetime.utcnow().isoformat(), price, price, 1 if still_tracking else 0, row_id)),
+                    self._conn.commit(),
+                )
+            )
+
+    async def query_rejected_tracking(self, limit: int = 200) -> list[dict[str, Any]]:
+        async with self._lock:
+            rows = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: self._conn.execute("""
+                    SELECT symbol, rejected_at, rejection_price, rejection_reason, room,
+                           last_checked_at, last_price, pct_change, still_tracking
+                    FROM rejected_idea_tracking
+                    WHERE last_price IS NOT NULL
+                    ORDER BY rejected_at DESC LIMIT ?
+                """, (limit,)).fetchall()
+            )
+        cols = ["symbol", "rejected_at", "rejection_price", "rejection_reason", "room",
+                "last_checked_at", "last_price", "pct_change", "still_tracking"]
+        return [dict(zip(cols, r)) for r in rows]
 
     async def record(
         self,
