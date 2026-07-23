@@ -3,14 +3,18 @@ import { useStore } from '../hooks/useStore'
 const API_KEY = (import.meta.env.VITE_API_KEY as string | undefined) ?? ''
 const DEFAULT_PORT = 8000
 
-// The default portfolio (port 8000) keeps using the relative, Vite-proxied
-// '/api' path — byte-for-byte the same request it always made. Any other
-// portfolio calls its backend directly by port; CORS on the backend is
-// already wide open, so no proxy config needs to know about it in advance.
+// Always builds an absolute URL off the page's own hostname (matches
+// useLiveFeed.ts's getWsUrl) — a hardcoded 'localhost' only works when
+// browsing from the same machine the backend runs on, and breaks the moment
+// the dashboard is opened remotely (VM's public IP, a phone, etc.). CORS on
+// the backend is already wide open, so calling the port directly needs no
+// proxy config either in dev or production. No '/api' segment here — the
+// FastAPI routes are mounted at the root (/portfolio, /pods, ...), not under
+// /api; that prefix only ever existed as a Vite dev-proxy rewrite rule.
 function base(): string {
   const { portfolios, selectedPortfolioId } = useStore.getState()
   const port = portfolios.find(p => p.id === selectedPortfolioId)?.port ?? DEFAULT_PORT
-  return port === DEFAULT_PORT ? '/api' : `http://localhost:${port}/api`
+  return `http://${window.location.hostname}:${port}`
 }
 
 function authHeaders(): Record<string, string> {
