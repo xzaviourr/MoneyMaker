@@ -40,6 +40,15 @@ log = structlog.get_logger(__name__)
 
 _STATE_PATH = DATA_DIR / "paper_broker_state.json"
 
+# Positions are tracked globally per symbol, not per pod/desk. Only these
+# system-level managers are allowed to exit a position they didn't open
+# themselves (portfolio_manager rebalances/exits any holding; position_monitor
+# instead re-tags its own exits with the *original* position's source, so it
+# never needs to appear here). Anyone else must own the position it's exiting —
+# otherwise one pod's/desk's independent signal can silently close a position
+# opened by a completely different one, just because they share a symbol.
+_CROSS_SOURCE_EXIT_ALLOWED = {"portfolio_manager"}
+
 
 class PaperBroker(BaseBroker):
     """
@@ -317,7 +326,21 @@ class PaperBroker(BaseBroker):
                         status=OrderStatus.REJECTED,
                         rejection_reason="No position to sell",
                     )
-                pos          = self._positions[pos_key]
+                pos = self._positions[pos_key]
+                same_source = (order.source_pod, order.source_desk) == (pos.source_pod, pos.source_desk)
+                if not same_source and order.source_pod not in _CROSS_SOURCE_EXIT_ALLOWED:
+                    log.warning("paper_broker.rejected_cross_source_exit", symbol=order.symbol,
+                                position_source=(pos.source_pod, pos.source_desk),
+                                order_source=(order.source_pod, order.source_desk))
+                    return OrderResult(
+                        order_id=order.id,
+                        status=OrderStatus.REJECTED,
+                        rejection_reason=(
+                            f"Position in {order.symbol} is owned by "
+                            f"{pos.source_pod or pos.source_desk or 'another strategy'} — "
+                            f"refusing cross-strategy exit"
+                        ),
+                    )
                 entry_price  = pos.average_price
                 entry_time   = pos.opened_at
                 qty_before   = pos.quantity
