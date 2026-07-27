@@ -93,7 +93,128 @@ class ExplainabilityLedger:
             CREATE INDEX IF NOT EXISTS idx_rejected_tracking_active
             ON rejected_idea_tracking(still_tracking)
         """)
+        # User-submitted trade ideas ("I saw this at 8pm, want to buy it
+        # tomorrow") — runs through the same Room 1 debate as any AI-found
+        # idea so the reasoning is shown before the user decides, but the
+        # AI's verdict never blocks execution — see LongTermDesk.debate_user_
+        # idea/execute_user_idea. status: pending -> debated -> executed|failed.
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_ideas (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol            TEXT    NOT NULL,
+                note              TEXT,
+                submitted_at      TEXT    NOT NULL,
+                status            TEXT    NOT NULL DEFAULT 'pending',
+                verdict_approved  INTEGER,
+                verdict_reasoning TEXT,
+                bull_case         TEXT,
+                bear_case         TEXT,
+                devil_lean        TEXT,
+                chair_conviction  REAL,
+                risk_passed       INTEGER,
+                risk_issues       TEXT,
+                estimated_qty     INTEGER,
+                estimated_price   REAL,
+                estimated_capital REAL,
+                debated_at        TEXT,
+                error             TEXT,
+                executed_at       TEXT,
+                executed_qty      INTEGER,
+                executed_price    REAL,
+                executed_order_id TEXT
+            )
+        """)
         self._conn.commit()
+
+    async def submit_user_idea(self, symbol: str, note: str) -> int:
+        async with self._lock:
+            def _do() -> int:
+                cur = self._conn.execute("""
+                    INSERT INTO user_ideas (symbol, note, submitted_at, status)
+                    VALUES (?, ?, ?, 'pending')
+                """, (symbol, note, datetime.utcnow().isoformat()))
+                self._conn.commit()
+                return cur.lastrowid
+            return await asyncio.get_event_loop().run_in_executor(None, _do)
+
+    async def save_user_idea_debate(self, idea_id: int, *, verdict_approved: bool,
+                                     verdict_reasoning: str, bull_case: str, bear_case: str,
+                                     devil_lean: str, chair_conviction: float,
+                                     risk_passed: bool, risk_issues: list[str],
+                                     estimated_qty: int, estimated_price: float,
+                                     estimated_capital: float) -> None:
+        async with self._lock:
+            await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: (
+                    self._conn.execute("""
+                        UPDATE user_ideas SET
+                            status='debated', verdict_approved=?, verdict_reasoning=?,
+                            bull_case=?, bear_case=?, devil_lean=?, chair_conviction=?,
+                            risk_passed=?, risk_issues=?, estimated_qty=?, estimated_price=?,
+                            estimated_capital=?, debated_at=?
+                        WHERE id=?
+                    """, (
+                        1 if verdict_approved else 0, verdict_reasoning, bull_case, bear_case,
+                        devil_lean, chair_conviction, 1 if risk_passed else 0,
+                        json.dumps(risk_issues), estimated_qty, estimated_price,
+                        estimated_capital, datetime.utcnow().isoformat(), idea_id,
+                    )),
+                    self._conn.commit(),
+                )
+            )
+
+    async def mark_user_idea_failed(self, idea_id: int, error: str) -> None:
+        async with self._lock:
+            await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: (
+                    self._conn.execute(
+                        "UPDATE user_ideas SET status='failed', error=? WHERE id=?",
+                        (error, idea_id),
+                    ),
+                    self._conn.commit(),
+                )
+            )
+
+    async def mark_user_idea_executed(self, idea_id: int, qty: int, price: float, order_id: str) -> None:
+        async with self._lock:
+            await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: (
+                    self._conn.execute("""
+                        UPDATE user_ideas SET
+                            status='executed', executed_at=?, executed_qty=?,
+                            executed_price=?, executed_order_id=?
+                        WHERE id=?
+                    """, (datetime.utcnow().isoformat(), qty, price, order_id, idea_id)),
+                    self._conn.commit(),
+                )
+            )
+
+    async def get_user_idea(self, idea_id: int) -> Optional[dict[str, Any]]:
+        async with self._lock:
+            row = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: self._conn.execute(
+                    "SELECT * FROM user_ideas WHERE id=?", (idea_id,)
+                ).fetchone()
+            )
+        if row is None:
+            return None
+        cols = [d[0] for d in self._conn.execute("SELECT * FROM user_ideas WHERE 1=0").description]
+        return dict(zip(cols, row))
+
+    async def get_user_ideas(self, limit: int = 50) -> list[dict[str, Any]]:
+        async with self._lock:
+            rows = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: self._conn.execute(
+                    "SELECT * FROM user_ideas ORDER BY submitted_at DESC LIMIT ?", (limit,)
+                ).fetchall()
+            )
+            cols = [d[0] for d in self._conn.execute("SELECT * FROM user_ideas WHERE 1=0").description]
+        return [dict(zip(cols, r)) for r in rows]
 
     async def record_rejection(
         self, symbol: str, rejection_price: float, rejection_reason: str, room: str,

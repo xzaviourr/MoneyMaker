@@ -165,3 +165,28 @@ export interface ServiceLog {
   details: Record<string, unknown> | null
   ts:      number
 }
+
+export interface UserIdea {
+  id:                 number
+  symbol:             string
+  note:               string | null
+  submitted_at:       string
+  status:             'pending' | 'debated' | 'executed' | 'failed'
+  verdict_approved:   number | null   // sqlite 0/1
+  verdict_reasoning:  string | null
+  bull_case:          string | null
+  bear_case:          string | null
+  devil_lean:         string | null
+  chair_conviction:   number | null
+  risk_passed:        number | null   // sqlite 0/1
+  risk_issues:        string | null   // JSON-encoded string[]
+  estimated_qty:      number | null
+  estimated_price:    number | null
+  estimated_capital:  number | null
+  debated_at:         string | null
+  error:              string | null
+  executed_at:        string | null
+  executed_qty:       number | null
+  executed_price:     number | null
+  executed_order_id:  string | null
+}

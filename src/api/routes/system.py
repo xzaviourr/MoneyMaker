@@ -53,6 +53,10 @@ def get_guardian() -> Any:
     return _guardian
 
 
+def get_lt_desk() -> Any:
+    return _lt_desk
+
+
 @router.get("/queue")
 async def get_idea_queue() -> dict:
     """What's currently lined up waiting for a Room 1 debate (Long-Term Desk),

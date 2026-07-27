@@ -425,3 +425,133 @@ class LongTermDesk:
             return float(lt.allocated) if lt else 1_000_000.0
         except Exception:
             return 1_000_000.0
+
+    # ── User-submitted ideas ─────────────────────────────────────────────
+    # "I saw this at 8pm, want to buy it tomorrow" — runs through the same
+    # Room 1 debate as any AI-found idea so the user sees real reasoning
+    # (bull/bear case, chair verdict) before deciding, but — unlike the
+    # normal auto-flow — the verdict is informational only and never blocks
+    # execute_user_idea(). The user is the final judge, not the committee.
+
+    async def debate_user_idea(self, idea_id: int, symbol: str, note: str) -> None:
+        from ..audit.explainability_ledger import ExplainabilityLedger
+        from ..shared.schemas import IdeaQueueItem, SignalDirection
+
+        ledger = ExplainabilityLedger.get()
+        try:
+            current_price = await self._get_current_price(symbol)
+            if current_price <= 0:
+                await ledger.mark_user_idea_failed(
+                    idea_id, f"No real market price available for {symbol}"
+                )
+                return
+
+            idea = IdeaQueueItem(
+                symbol=symbol,
+                exchange=self._exchange,
+                direction=SignalDirection.LONG,
+                conviction_score=0.7,
+                supporting_strategies=["user_submitted"],
+            )
+
+            brief    = await self._scout.brief(idea)
+            bull     = await self._bull.argue(idea, brief)
+            bear     = await self._bear.argue(idea, brief, bull)
+            devil    = await self._devil.stress_test(idea, brief, bull, bear)
+            sector   = await self._sector.assess(idea, brief)
+            momentum = await self._momentum.assess(idea, brief, bull)
+            verdict  = await self._chair1.deliberate(
+                idea, brief, bull, bear, devil, sector, momentum
+            )
+
+            cartographer  = await self._cartographer.map(verdict)
+            position_size = await self._sizer.compute(verdict, bull, bear, cartographer, current_price)
+            est_qty     = int(position_size.get("quantity", 0) or 0)
+            est_capital = float(position_size.get("position_value_inr", 0) or est_qty * current_price)
+
+            # Informational sanity check only — the full RiskGatekeeper needs
+            # a complete AllocationPlan (Room 2's Liquidation/OpportunityCost/
+            # CostBasis/AllocChair chain), which is overkill for a debate the
+            # user can override anyway. The broker's own concentration-cap
+            # check (see risk_gatekeeper.py fix, 07-22) still applies for real
+            # at actual execution time regardless of this estimate.
+            pillar_total = await self._get_lt_pillar_total()
+            risk_passed  = est_capital <= pillar_total * 0.10
+            risk_issues  = [] if risk_passed else [
+                f"Estimated position (₹{est_capital:,.0f}) would exceed 10% of the "
+                f"long-term pillar (₹{pillar_total:,.0f}) — consider a smaller size"
+            ]
+
+            await ledger.save_user_idea_debate(
+                idea_id,
+                verdict_approved=verdict.approved,
+                verdict_reasoning=verdict.reasoning,
+                bull_case=bull.get("bull_case", ""),
+                bear_case=bear.get("bear_case", ""),
+                devil_lean=devil.get("go_no_go_lean", "conditional"),
+                chair_conviction=verdict.final_conviction,
+                risk_passed=risk_passed,
+                risk_issues=risk_issues,
+                estimated_qty=est_qty,
+                estimated_price=current_price,
+                estimated_capital=est_capital,
+            )
+            log.info("lt_desk.user_idea_debated", idea_id=idea_id, symbol=symbol,
+                     approved=verdict.approved)
+        except Exception as exc:
+            log.exception("lt_desk.user_idea_debate_error", idea_id=idea_id, symbol=symbol)
+            await ledger.mark_user_idea_failed(idea_id, str(exc)[:500])
+
+    async def execute_user_idea(self, idea_id: int) -> dict:
+        from ..audit.explainability_ledger import ExplainabilityLedger
+        from ..supervisor.capital_tracker import CapitalTracker
+        from ..shared.schemas import Order, OrderSide, OrderType, OrderStatus
+
+        ledger = ExplainabilityLedger.get()
+        idea = await ledger.get_user_idea(idea_id)
+        if idea is None:
+            raise ValueError("No such idea")
+        if idea["status"] != "debated":
+            raise ValueError(f"Idea is '{idea['status']}', not ready to execute")
+
+        current_price = await self._get_current_price(idea["symbol"])
+        if current_price <= 0:
+            raise ValueError("No real market price available right now")
+
+        est_capital = float(idea["estimated_capital"] or 0)
+        qty = max(1, int(est_capital / current_price)) if est_capital > 0 else max(1, int(idea["estimated_qty"] or 1))
+        capital_needed = qty * current_price
+
+        await CapitalTracker.get().reserve_for_lt_desk(idea["symbol"], capital_needed)
+        order = Order(
+            symbol=idea["symbol"],
+            exchange=self._exchange,
+            side=OrderSide.BUY,
+            order_type=OrderType.MARKET,
+            quantity=qty,
+            source_desk="long_term_desk",
+            strategy="user_submitted",
+        )
+        result = await BrokerGateway.get().place_order(order)
+
+        if result.status == OrderStatus.FILLED and result.average_fill_price:
+            filled_value = float(result.average_fill_price) * result.filled_quantity
+            unused = capital_needed - filled_value
+            if unused > 0:
+                await CapitalTracker.get().release_lt_desk(idea["symbol"], unused)
+            await ledger.mark_user_idea_executed(
+                idea_id, result.filled_quantity, float(result.average_fill_price), result.order_id
+            )
+            log.info("lt_desk.user_idea_executed", idea_id=idea_id, symbol=idea["symbol"],
+                     qty=result.filled_quantity, price=str(result.average_fill_price))
+            return {
+                "status": "executed",
+                "quantity": result.filled_quantity,
+                "price": float(result.average_fill_price),
+            }
+        else:
+            await CapitalTracker.get().release_lt_desk(idea["symbol"], capital_needed)
+            await ledger.mark_user_idea_failed(idea_id, result.rejection_reason or "Order not filled")
+            log.warning("lt_desk.user_idea_execute_failed", idea_id=idea_id,
+                        symbol=idea["symbol"], reason=result.rejection_reason)
+            return {"status": "failed", "reason": result.rejection_reason or "Order not filled"}
