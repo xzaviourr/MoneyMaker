@@ -8,6 +8,7 @@ import { PortfolioSwitcher } from './components/PortfolioSwitcher'
 import Dashboard from './pages/Dashboard'
 import PodsPage from './pages/Pods'
 import QueuePage from './pages/Queue'
+import MyIdeasPage from './pages/MyIdeas'
 import PositionsPage from './pages/Positions'
 import PortfolioManagerPage from './pages/PortfolioManager'
 import TradesPage from './pages/Trades'
@@ -136,6 +137,7 @@ export default function App() {
             <NavItem to="/portfolio" label="Portfolio Manager"  />
             <NavItem to="/pods"      label="Pods"               />
             <NavItem to="/queue"     label="Queue"              />
+            <NavItem to="/my-ideas"  label="My Ideas"           />
             <NavItem to="/trades"    label="Trades"             />
             <NavItem to="/reports"   label="Reports"            />
             <NavItem to="/decisions" label="Decisions"          />
@@ -170,6 +172,7 @@ export default function App() {
               <Route path="/flow"      element={<SystemFlow />}            />
               <Route path="/pods"      element={<PodsPage />}              />
               <Route path="/queue"     element={<QueuePage />}             />
+              <Route path="/my-ideas"  element={<MyIdeasPage />}           />
               <Route path="/trades"    element={<TradesPage />}            />
               <Route path="/reports"   element={<ReportsPage />}           />
               <Route path="/decisions" element={<DecisionsPage />}         />
