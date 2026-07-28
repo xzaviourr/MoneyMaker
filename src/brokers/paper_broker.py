@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import random
 import uuid
 from datetime import datetime
 from decimal import Decimal
@@ -50,6 +49,16 @@ _STATE_PATH = DATA_DIR / "paper_broker_state.json"
 _CROSS_SOURCE_EXIT_ALLOWED = {"portfolio_manager"}
 
 
+def _last_scalar(df, column: str):
+    """Most recent value in a column, defensively unwrapping yfinance's
+    occasional MultiIndex-column shape — same pattern already used in
+    long_term_desk.py's _get_current_price, applied here too."""
+    series = df[column]
+    if hasattr(series, "shape") and len(getattr(series, "shape", (1,))) > 1:
+        series = series.iloc[:, 0]
+    return series.iloc[-1]
+
+
 class PaperBroker(BaseBroker):
     """
     Simulates broker fills with:
@@ -83,6 +92,7 @@ class PaperBroker(BaseBroker):
         # would ever receive a tick.
         self._subscriptions: list[tuple[list[tuple[str, str]], QuoteCallback]] = []
         self._prices: dict[str, Decimal] = {}
+        self._last_bar_ts: dict[str, object] = {}  # last real bar timestamp fed per symbol
         self._load_state()  # resume balance/positions/trades from before a restart, if any
 
     # ── Persistence ────────────────────────────────────────────────────────
@@ -215,7 +225,7 @@ class PaperBroker(BaseBroker):
     ) -> None:
         self._subscriptions.append((symbols, callback))
         if self._stream_task is None or self._stream_task.done():
-            self._stream_task = asyncio.create_task(self._mock_stream())
+            self._stream_task = asyncio.create_task(self._real_quote_stream())
 
     def add_symbols(self, callback: QuoteCallback, symbols: list[tuple[str, str]]) -> None:
         """Grow an existing subscriber's watchlist at runtime — e.g. when news
@@ -236,31 +246,72 @@ class PaperBroker(BaseBroker):
                 pass
         self._subscriptions.clear()
 
-    async def _mock_stream(self) -> None:
-        """Emits random-walk quotes every second for each subscriber's own watchlist."""
-        from datetime import datetime
+    _STREAM_POLL_SECONDS = 20
+
+    async def _real_quote_stream(self) -> None:
+        """Feeds every subscribed pod real Yahoo Finance 1-minute bars —
+        replaces a prior random-walk mock (found 07-28: price moved via
+        random.gauss noise and volume was random.randint every tick, so
+        pods' EMA-crossover + volume-spike signals were chasing pure noise,
+        not real market activity, which is why intraday pods essentially
+        never traded despite having capital allocated).
+
+        market_data_cache's 'intraday' TTL is 5 minutes, so the underlying
+        data only actually refreshes that often no matter how frequently we
+        poll here — polling every _STREAM_POLL_SECONDS just keeps this
+        responsive to a fresh bar as soon as the cache allows one, at the
+        cost of cheap cache-hit reads, not extra Yahoo requests. Each symbol
+        is only pushed to subscribers when its latest bar's timestamp
+        actually changes, so pods don't get fed N duplicate copies of the
+        same bar between real updates.
+        """
+        from ..shared import market_data_cache
+
+        loop = asyncio.get_event_loop()
         while True:
-            for symbols, callback in list(self._subscriptions):
-                for symbol, exchange in symbols:
-                    if symbol not in self._prices:
-                        q = await self.get_quote(symbol, exchange)
-                        self._prices[symbol] = q.ltp
-                    else:
-                        pct = Decimal(str(random.gauss(0, 0.00005)))
-                        self._prices[symbol] *= (1 + pct)
+            seen: set[tuple[str, str]] = set()
+            for symbols, _cb in list(self._subscriptions):
+                seen.update(symbols)
+
+            for symbol, exchange in seen:
+                try:
+                    suffix = ".NS" if exchange == "NSE" else ".BO"
+                    df = await loop.run_in_executor(
+                        None,
+                        lambda s=symbol, sfx=suffix: market_data_cache.download(
+                            f"{s}{sfx}", period="1d", interval="1m"
+                        ),
+                    )
+                    if df is None or df.empty:
+                        continue
+
+                    last_ts = df.index[-1]
+                    if self._last_bar_ts.get(symbol) == last_ts:
+                        continue  # same bar as last poll — nothing new to feed
+                    self._last_bar_ts[symbol] = last_ts
+
+                    close_price = Decimal(str(float(_last_scalar(df, "Close"))))
+                    self._prices[symbol] = close_price
                     q = Quote(
                         symbol=symbol,
                         exchange=Exchange(exchange),
                         timestamp=datetime.utcnow(),
-                        ltp=self._prices[symbol],
-                        open=self._prices[symbol],
-                        high=self._prices[symbol] * Decimal("1.001"),
-                        low=self._prices[symbol] * Decimal("0.999"),
-                        close=self._prices[symbol],
-                        volume=random.randint(1000, 100_000),
+                        ltp=close_price,
+                        open=Decimal(str(float(_last_scalar(df, "Open")))),
+                        high=Decimal(str(float(_last_scalar(df, "High")))),
+                        low=Decimal(str(float(_last_scalar(df, "Low")))),
+                        close=close_price,
+                        volume=int(_last_scalar(df, "Volume")),
                     )
-                    callback(q)
-            await asyncio.sleep(1.0)
+                except Exception:
+                    log.debug("paper_broker.stream_quote_fetch_failed", symbol=symbol)
+                    continue
+
+                for symbols, callback in list(self._subscriptions):
+                    if (symbol, exchange) in symbols:
+                        callback(q)
+
+            await asyncio.sleep(self._STREAM_POLL_SECONDS)
 
     # ── Orders ─────────────────────────────────────────────────────────────
 
