@@ -115,6 +115,24 @@ class CapitalLedger:
                 amount=str(amount), pnl=str(pnl),
             )
 
+    async def set_deployed(self, pillar: str, real_deployed: Decimal) -> None:
+        """Overwrites a pillar's deployed/available with a value computed
+        from real broker positions, instead of trusting whatever the
+        incremental allocate_to_pod/return_from_pod calls have tracked so
+        far — those can silently drift from reality (a missed release call
+        anywhere, or the ledger simply never persisting across a restart).
+        available is allowed to go to 0 without going negative even when
+        real_deployed exceeds the pillar's nominal allocation — that's a
+        real over-concentration condition worth surfacing, not hiding."""
+        async with self._lock:
+            if pillar not in self._pillars:
+                return
+            alloc = self._pillars[pillar]
+            available = max(Decimal("0"), alloc.allocated - real_deployed)
+            self._pillars[pillar] = alloc.model_copy(
+                update={"deployed": real_deployed, "available": available}
+            )
+
     # ── Snapshots ──────────────────────────────────────────────────────────
 
     async def snapshot(self) -> CapitalSnapshot:

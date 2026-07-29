@@ -343,6 +343,12 @@ async def _boot(paper: bool = False, api_only: bool = False, demo: bool = False)
     await pod_supervisor.start()
     set_pod_supervisor(pod_supervisor)
 
+    # Correct the capital ledger against real open positions right away (it's
+    # in-memory only and resets to "nothing deployed" on every restart, while
+    # the broker's real positions persist — see reconcile_with_broker) and
+    # keep it self-correcting every 5 minutes from here on.
+    await tracker.start_reconcile_loop()
+
     # 8. Long-Term Desk
     lt_desk = LongTermDesk()
     await lt_desk.start()
