@@ -132,3 +132,52 @@ class CapitalTracker:
             amount=dec_amount,
             pnl=dec_pnl,
         )
+
+    # ── Reconciliation ─────────────────────────────────────────────────────
+    # Found 07-28: the ledger above is purely in-memory (unlike the broker's
+    # own state, which persists to disk) and every allocate/return call has
+    # to be matched exactly for its numbers to stay true — one missed
+    # release call, or simply restarting the process, silently drifts it
+    # away from reality forever. Confirmed live: after normal restarts, the
+    # ledger showed long_term at ₹0 deployed / ₹5L available while ₹9.8L was
+    # actually invested, and intraday showed its full ₹4L "deployed" while
+    # pods had never placed a single real trade. Fix: periodically recompute
+    # each pillar's real deployed capital directly from actual open broker
+    # positions — the one thing that's actually persisted and can't lie —
+    # so any drift self-corrects instead of compounding indefinitely.
+
+    _INTRADAY_POD_IDS = {"momentum_pod", "breakout_pod", "mean_reversion_pod", "event_pod"}
+
+    async def reconcile_with_broker(self) -> None:
+        from ..brokers.broker_gateway import BrokerGateway
+        try:
+            positions = await BrokerGateway.get().get_positions()
+        except Exception:
+            log.warning("capital_tracker.reconcile_failed_no_broker")
+            return
+
+        lt_value       = Decimal("0")
+        intraday_value = Decimal("0")
+        for p in positions:
+            value = Decimal(str(p.current_price)) * p.quantity
+            if p.source_desk == "long_term_desk":
+                lt_value += value
+            elif p.source_pod in self._INTRADAY_POD_IDS:
+                intraday_value += value
+
+        await self._ledger.set_deployed("long_term", lt_value)
+        await self._ledger.set_deployed("intraday", intraday_value)
+        log.info("capital_tracker.reconciled",
+                 long_term_deployed=str(lt_value), intraday_deployed=str(intraday_value))
+
+    async def start_reconcile_loop(self) -> None:
+        await self.reconcile_with_broker()  # correct immediately, not just eventually
+        asyncio.create_task(self._reconcile_loop())
+
+    async def _reconcile_loop(self) -> None:
+        while True:
+            await asyncio.sleep(300)
+            try:
+                await self.reconcile_with_broker()
+            except Exception:
+                log.exception("capital_tracker.reconcile_loop_error")
