@@ -5,7 +5,7 @@ log_level = "INFO"
 timezone = "Asia/Kolkata"
 
 [capital]
-total_capital = 1_000_000   # ₹10 lakh initial capital
+total_capital = 1_500_000   # ₹15 lakh (raised from ₹10L on 07-29 — long-term desk was at 98.6% utilization)
 intraday_pct   = 0.40       # 40% to intraday pods
 long_term_pct  = 0.50       # 50% to long-term desk
 guardian_reserve_pct = 0.10 # 10% reserved by guardian
