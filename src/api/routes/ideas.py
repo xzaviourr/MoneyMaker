@@ -9,8 +9,10 @@ from __future__ import annotations
 import asyncio
 import re
 
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ...audit.explainability_ledger import ExplainabilityLedger
 from .system import get_lt_desk
@@ -23,6 +25,12 @@ _SYMBOL_RE = re.compile(r"^[A-Z0-9&\-]{1,20}$")
 class SubmitIdeaRequest(BaseModel):
     symbol: str
     note:   str = ""
+
+
+class ExecuteIdeaRequest(BaseModel):
+    # None (or omitted body) means "use the AI's suggested quantity" — a
+    # user-specified value always overrides it, never the other way round.
+    quantity: Optional[int] = Field(default=None, gt=0)
 
 
 @router.post("/")
@@ -58,11 +66,11 @@ async def list_ideas(limit: int = 50) -> list[dict]:
 
 
 @router.post("/{idea_id}/execute")
-async def execute_idea(idea_id: int) -> dict:
+async def execute_idea(idea_id: int, body: ExecuteIdeaRequest = ExecuteIdeaRequest()) -> dict:
     lt_desk = get_lt_desk()
     if lt_desk is None:
         raise HTTPException(status_code=503, detail="Long-term desk not ready yet")
     try:
-        return await lt_desk.execute_user_idea(idea_id)
+        return await lt_desk.execute_user_idea(idea_id, quantity=body.quantity)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

@@ -502,7 +502,7 @@ class LongTermDesk:
             log.exception("lt_desk.user_idea_debate_error", idea_id=idea_id, symbol=symbol)
             await ledger.mark_user_idea_failed(idea_id, str(exc)[:500])
 
-    async def execute_user_idea(self, idea_id: int) -> dict:
+    async def execute_user_idea(self, idea_id: int, quantity: Optional[int] = None) -> dict:
         from ..audit.explainability_ledger import ExplainabilityLedger
         from ..supervisor.capital_tracker import CapitalTracker
         from ..shared.schemas import Order, OrderSide, OrderType, OrderStatus
@@ -518,8 +518,16 @@ class LongTermDesk:
         if current_price <= 0:
             raise ValueError("No real market price available right now")
 
-        est_capital = float(idea["estimated_capital"] or 0)
-        qty = max(1, int(est_capital / current_price)) if est_capital > 0 else max(1, int(idea["estimated_qty"] or 1))
+        # A user-specified quantity always wins over the AI's suggested size —
+        # the whole point of this feature is that the AI's estimate is a
+        # starting point, not a ceiling the user is stuck with.
+        if quantity is not None:
+            if quantity <= 0:
+                raise ValueError("Quantity must be a positive number")
+            qty = quantity
+        else:
+            est_capital = float(idea["estimated_capital"] or 0)
+            qty = max(1, int(est_capital / current_price)) if est_capital > 0 else max(1, int(idea["estimated_qty"] or 1))
         capital_needed = qty * current_price
 
         await CapitalTracker.get().reserve_for_lt_desk(idea["symbol"], capital_needed)
