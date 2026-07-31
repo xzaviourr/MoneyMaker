@@ -31,6 +31,7 @@ export default function MyIdeasPage() {
   const queryClient = useQueryClient()
   const [symbol, setSymbol] = useState('')
   const [note, setNote] = useState('')
+  const [qtyOverrides, setQtyOverrides] = useState<Record<number, string>>({})
 
   const { data: ideas = [], isLoading } = useQuery<UserIdea[]>({
     queryKey:        ['my-ideas', selectedPortfolioId],
@@ -48,7 +49,8 @@ export default function MyIdeasPage() {
   })
 
   const execute = useMutation({
-    mutationFn: (id: number) => postJson(`/ideas/${id}/execute`, {}),
+    mutationFn: ({ id, quantity }: { id: number; quantity?: number }) =>
+      postJson(`/ideas/${id}/execute`, quantity ? { quantity } : {}),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['my-ideas', selectedPortfolioId] }),
   })
 
@@ -149,13 +151,29 @@ export default function MyIdeasPage() {
                   </div>
 
                   {idea.status === 'debated' && (
-                    <button
-                      className="btn-primary mt-1"
-                      disabled={execute.isPending}
-                      onClick={() => execute.mutate(idea.id)}
-                    >
-                      {execute.isPending ? 'Buying…' : 'Buy Now'}
-                    </button>
+                    <div className="flex items-center gap-2 mt-1">
+                      <label className="text-xs text-gray-500" htmlFor={`qty-${idea.id}`}>Qty</label>
+                      <input
+                        id={`qty-${idea.id}`}
+                        type="number"
+                        min={1}
+                        className="bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-white w-24 placeholder:text-gray-600 focus:outline-none focus:border-brand-500"
+                        placeholder={String(idea.estimated_qty ?? 1)}
+                        value={qtyOverrides[idea.id] ?? ''}
+                        onChange={e => setQtyOverrides(prev => ({ ...prev, [idea.id]: e.target.value }))}
+                      />
+                      <button
+                        className="btn-primary"
+                        disabled={execute.isPending}
+                        onClick={() => {
+                          const raw = qtyOverrides[idea.id]
+                          const quantity = raw ? parseInt(raw, 10) : undefined
+                          execute.mutate({ id: idea.id, quantity })
+                        }}
+                      >
+                        {execute.isPending ? 'Buying…' : 'Buy Now'}
+                      </button>
+                    </div>
                   )}
                   {idea.status === 'executed' && (
                     <div className="text-xs text-green-400 mt-1">
