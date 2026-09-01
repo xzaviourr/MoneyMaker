@@ -10,11 +10,28 @@ function parseJsonSafe(raw: string | null): Record<string, unknown> | null {
   try { return JSON.parse(raw) } catch { return null }
 }
 
+function fmtTs(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  const utc = iso.endsWith('Z') ? iso : iso + 'Z'
+  return new Date(utc).toLocaleString('en-IN', {
+    day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
+  })
+}
+
+function fmtTsTime(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  const utc = iso.endsWith('Z') ? iso : iso + 'Z'
+  return new Date(utc).toLocaleTimeString('en-IN', {
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  })
+}
+
 // Always shows the most recently completed news → decision → trade story as
 // a checklist, instead of requiring you to catch a 2-second flash live.
 function LatestTraceCard() {
+  const selectedPortfolioId = useStore(s => s.selectedPortfolioId)
   const { data } = useQuery<Decision[]>({
-    queryKey: ['latest-trace'],
+    queryKey: ['latest-trace', selectedPortfolioId],
     queryFn:  () => fetchJson('/decisions/?limit=1'),
     refetchInterval: 4000,
   })
@@ -47,7 +64,7 @@ function LatestTraceCard() {
     <div className="card flex flex-col gap-3">
       <div className="flex items-center justify-between">
         <div className="text-xs font-mono text-gray-400">Latest Trace — {d.symbol}</div>
-        <span className="text-xs text-gray-600">{d.event_ts?.slice(0, 19).replace('T', ' ')}</span>
+        <span className="text-xs text-gray-600">{fmtTs(d.event_ts)}</span>
       </div>
       <Step done label="📰 News / Signal analysed"
         detail={d.reasoning?.slice(0, 140) || '—'} />
@@ -212,7 +229,7 @@ function EventFeed() {
         const symbol  = extractSymbol(e.type, e.payload)
         return (
           <div key={i} className="flex gap-2 text-xs font-mono border-b border-gray-800 pb-1">
-            <span className="text-gray-600 shrink-0">{String(e.ts)?.slice(11, 19)}</span>
+            <span className="text-gray-600 shrink-0">{fmtTsTime(e.ts)}</span>
             <span className="shrink-0">{STAGE_ICON[e.type] ?? '•'}</span>
             {symbol && <span className="text-emerald-400 shrink-0 w-20 truncate">{symbol}</span>}
             <span className="text-brand-500 shrink-0 w-28 truncate">{e.type}</span>
@@ -228,8 +245,9 @@ interface FlowState { title: string; lines: string[] }
 interface GraphNodeLite { id: string; state: FlowState }
 
 function NewsSourcesCard() {
+  const selectedPortfolioId = useStore(s => s.selectedPortfolioId)
   const { data: graph } = useQuery<{ nodes: GraphNodeLite[] }>({
-    queryKey: ['graph-news-sources'],
+    queryKey: ['graph-news-sources', selectedPortfolioId],
     queryFn:  () => fetchJson('/system/graph'),
     refetchInterval: 10000,
   })
@@ -247,14 +265,15 @@ function NewsSourcesCard() {
 }
 
 export default function Dashboard() {
+  const selectedPortfolioId = useStore(s => s.selectedPortfolioId)
   const { data: snap } = useQuery<CapitalSnapshot>({
-    queryKey: ['capital'],
+    queryKey: ['capital', selectedPortfolioId],
     queryFn:  () => fetchJson('/portfolio/snapshot'),
     refetchInterval: 5000,
   })
 
   const { data: status } = useQuery({
-    queryKey: ['status'],
+    queryKey: ['status', selectedPortfolioId],
     queryFn:  () => fetchJson('/portfolio/status'),
     refetchInterval: 3000,
   })

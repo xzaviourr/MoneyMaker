@@ -39,6 +39,8 @@ class PositionMonitor:
         cfg = toml_cfg.get("guardian", {})
         self._default_sl_pct      = float(cfg.get("stop_loss_default_pct", 2.0))
         self._trailing_sl_pct     = float(cfg.get("trailing_stop_default_pct", 1.5))
+        self._min_hold_seconds    = int(cfg.get("min_hold_seconds", 900))    # 15 min before normal stop fires
+        self._hard_stop_pct       = float(cfg.get("hard_stop_pct", 4.0))     # immediate exit regardless of hold time
         self._gateway             = gateway
         self._bus                 = MessageBus.get()
         self._positions: dict[str, Position] = {}
@@ -126,8 +128,28 @@ class PositionMonitor:
 
         key = f"{pos.symbol}_{pos.exchange.value}"
         effective_stop = self._compute_stop(pos, self._high_water.get(key, pos.average_price))
-        if (pos.side == OrderSide.BUY and quote.ltp <= effective_stop) or \
-           (pos.side == OrderSide.SELL and quote.ltp >= effective_stop):
+        stop_breached = (pos.side == OrderSide.BUY and quote.ltp <= effective_stop) or \
+                        (pos.side == OrderSide.SELL and quote.ltp >= effective_stop)
+
+        if stop_breached:
+            # Calculate how far the price has moved against us (as a positive %)
+            if pos.side == OrderSide.BUY:
+                loss_pct = float((pos.average_price - quote.ltp) / pos.average_price * 100)
+            else:
+                loss_pct = float((quote.ltp - pos.average_price) / pos.average_price * 100)
+
+            # Hard stop: always exit immediately if loss exceeds hard_stop_pct (default 4%)
+            if loss_pct >= self._hard_stop_pct:
+                log.warning("position_monitor.hard_stop", symbol=pos.symbol,
+                            loss_pct=f"{loss_pct:.2f}%", price=str(quote.ltp))
+                return f"Hard stop triggered: {loss_pct:.1f}% loss at ₹{float(quote.ltp):.2f}"
+
+            # Minimum hold: don't exit on noise in the first min_hold_seconds
+            hold_secs = (datetime.utcnow() - pos.opened_at).total_seconds() \
+                if pos.opened_at else self._min_hold_seconds
+            if hold_secs < self._min_hold_seconds:
+                return None  # Give the trade time to recover its transaction costs
+
             log.warning("position_monitor.stop_breach", symbol=pos.symbol,
                         price=str(quote.ltp), stop=str(effective_stop))
             return f"Stop-loss triggered: {quote.ltp} vs stop {effective_stop}"
@@ -135,13 +157,23 @@ class PositionMonitor:
         return None
 
     def _compute_stop(self, pos: Position, high_water: Decimal) -> Decimal:
-        """Returns the effective stop price (hard SL or trailing, whichever is tighter)."""
+        """Returns the effective stop price (hard SL or trailing, whichever is tighter).
+
+        Trailing stop only activates once the position is at least 1% profitable —
+        prevents normal intraday noise (0.5-0.8% swings) from triggering exits before
+        the trade has had a chance to develop.
+        """
         hard_sl = pos.stop_loss or (
             pos.average_price * Decimal(str(1 - self._default_sl_pct / 100))
         )
         if pos.trailing_stop_pct:
-            trailing_sl = high_water * Decimal(str(1 - pos.trailing_stop_pct / 100))
-            return max(hard_sl, trailing_sl) if pos.side == OrderSide.BUY else min(hard_sl, trailing_sl)
+            activation_price = pos.average_price * Decimal("1.01") if pos.side == OrderSide.BUY \
+                else pos.average_price * Decimal("0.99")
+            trail_activated = (high_water >= activation_price) if pos.side == OrderSide.BUY \
+                else (high_water <= activation_price)
+            if trail_activated:
+                trailing_sl = high_water * Decimal(str(1 - pos.trailing_stop_pct / 100))
+                return max(hard_sl, trailing_sl) if pos.side == OrderSide.BUY else min(hard_sl, trailing_sl)
         return hard_sl
 
     async def _exit_position(self, pos: Position, quote: Quote, reason: str) -> None:
@@ -167,7 +199,7 @@ class PositionMonitor:
                 fill_price=str(result.average_fill_price),
                 pnl=str(pnl) if pnl is not None else None,
             )
-            from ..intelligence.explainability_ledger import ExplainabilityLedger
+            from ..audit.explainability_ledger import ExplainabilityLedger
             await ExplainabilityLedger.get().record(
                 agent_id="position_monitor",
                 decision="sell" if pos.side == OrderSide.BUY else "buy",

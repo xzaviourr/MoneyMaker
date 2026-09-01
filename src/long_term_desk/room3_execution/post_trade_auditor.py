@@ -6,7 +6,7 @@ from typing import Any
 
 import structlog
 
-from ...intelligence.explainability_ledger import ExplainabilityLedger
+from ...audit.explainability_ledger import ExplainabilityLedger
 from ...shared.message_bus import MessageBus
 from ...shared.schemas import (
     AllocationPlan,
@@ -40,8 +40,8 @@ class PostTradeAuditor:
         # Compute average fill price
         total_qty   = sum(int(o.get("quantity", plan.quantity // len(filled_orders)))
                           for o in filled_orders) if filled_orders else 0
-        fill_prices = [float(o.get("average_fill_price", expected_price))
-                       for o in filled_orders if "average_fill_price" in o]
+        fill_prices = [float(o.get("average_fill_price") or expected_price)
+                       for o in filled_orders]
         avg_fill    = (sum(fill_prices) / len(fill_prices)) if fill_prices else expected_price
 
         slippage_bps = abs(avg_fill - expected_price) / expected_price * 10_000

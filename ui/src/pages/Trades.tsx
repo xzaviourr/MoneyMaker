@@ -2,6 +2,18 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { fetchJson, type Trade } from '../lib/api'
 import { fmtInr, fmtPrice, cn } from '../lib/utils'
+import { TableSkeleton } from '../components/Skeleton'
+import { useStore } from '../hooks/useStore'
+
+// Python's datetime.utcnow().isoformat() has no 'Z' suffix, so new Date()
+// would otherwise read it as local time and show it 5:30h off from IST.
+function fmtTs(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  const utc = iso.endsWith('Z') ? iso : iso + 'Z'
+  return new Date(utc).toLocaleString('en-IN', {
+    day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit',
+  })
+}
 
 // How long a position was actually held, from the original buy to this sell —
 // not shown anywhere before, since the trade book only stored the closing
@@ -19,9 +31,12 @@ function holdingDuration(entryTime: string | null, closeTime: string): string {
 }
 
 export default function TradesPage() {
+  const selectedSymbol    = useStore(s => s.selectedSymbol)
+  const setSelectedSymbol = useStore(s => s.setSelectedSymbol)
+  const selectedPortfolioId = useStore(s => s.selectedPortfolioId)
   const [sourceFilter, setSourceFilter] = useState('all')
   const { data: allTrades = [], isLoading } = useQuery<Trade[]>({
-    queryKey: ['trades'],
+    queryKey: ['trades', selectedPortfolioId],
     queryFn:  () => fetchJson('/portfolio/trades'),
     refetchInterval: 5000,
   })
@@ -32,7 +47,8 @@ export default function TradesPage() {
     : allTrades.filter(t => (t.source_desk || t.source_pod) === sourceFilter)
 
   const closed = trades.filter(t => t.entry_price != null)
-  const totalRealised = closed.reduce((sum, t) => sum + t.pnl, 0)
+  const totalRealised = closed.reduce((sum, t) => sum + (t.net_pnl ?? t.pnl), 0)
+  const totalTax = closed.reduce((sum, t) => sum + (t.tax ?? 0), 0)
 
   return (
     <div className="space-y-4">
@@ -47,14 +63,16 @@ export default function TradesPage() {
             <option value="all">All pods/desks</option>
             {sources.map(s => <option key={s} value={s}>{s}</option>)}
           </select>
-          <span className="text-gray-500">Total Realised P&L </span>
+          <span className="text-gray-500">Total Realised P&L (net of tax) </span>
           <span className={cn('font-mono font-semibold', totalRealised >= 0 ? 'pnl-pos' : 'pnl-neg')}>
             {totalRealised >= 0 ? '+' : ''}{fmtInr(totalRealised)}
           </span>
+          <span className="text-gray-500">Tax Paid </span>
+          <span className="font-mono font-semibold text-gray-300">{fmtInr(totalTax)}</span>
         </div>
       </div>
 
-      {isLoading && <div className="text-gray-500 text-sm">Loading…</div>}
+      {isLoading && <TableSkeleton rows={5} cols={6} />}
 
       <div className="card overflow-x-auto p-0">
         <table className="w-full text-left">
@@ -67,15 +85,29 @@ export default function TradesPage() {
               <th className="px-4 py-3">Bought At</th>
               <th className="px-4 py-3">Closed At</th>
               <th className="px-4 py-3">Held For</th>
-              <th className="px-4 py-3">P&L</th>
+              <th className="px-4 py-3">Charges</th>
+              <th className="px-4 py-3">Tax</th>
+              <th className="px-4 py-3">Net P&L</th>
               <th className="px-4 py-3">Pod / Desk</th>
             </tr>
           </thead>
           <tbody>
             {trades.map((t, i) => (
-              <tr key={t.trade_id ?? i} className="border-b border-gray-800 hover:bg-gray-900 transition-colors">
-                <td className="px-4 py-3 text-xs text-gray-500 font-mono">{t.timestamp?.slice(0, 19).replace('T', ' ')}</td>
-                <td className="px-4 py-3 font-mono font-semibold text-sm">{t.symbol}</td>
+              <tr key={t.trade_id ?? i} className={cn('border-b border-gray-800 hover:bg-gray-900 transition-colors', selectedSymbol === t.symbol && 'bg-brand-900/20')}>
+                <td className="px-4 py-3 text-xs text-gray-500 font-mono">{fmtTs(t.timestamp)}</td>
+                <td className="px-4 py-3">
+                  <button
+                    onClick={() => setSelectedSymbol(selectedSymbol === t.symbol ? null : t.symbol)}
+                    className={cn(
+                      'font-mono font-semibold text-sm transition-colors text-left underline decoration-dotted underline-offset-2',
+                      selectedSymbol === t.symbol
+                        ? 'text-brand-500 decoration-brand-500'
+                        : 'text-white decoration-gray-600 hover:text-brand-400 hover:decoration-brand-400'
+                    )}
+                  >
+                    {t.symbol}
+                  </button>
+                </td>
                 <td className="px-4 py-3">
                   <span className={cn('badge', t.side === 'buy' ? 'bg-green-900 text-green-300' : 'bg-red-900 text-red-300')}>
                     {t.side.toUpperCase()}
@@ -91,14 +123,25 @@ export default function TradesPage() {
                 <td className="px-4 py-3 font-mono text-sm text-gray-400">
                   {t.entry_price != null ? holdingDuration(t.entry_time, t.timestamp) : '—'}
                 </td>
-                <td className={cn('px-4 py-3 font-mono text-sm font-semibold', t.pnl >= 0 ? 'pnl-pos' : 'pnl-neg')}>
-                  {t.entry_price != null ? `${t.pnl >= 0 ? '+' : ''}${fmtPrice(t.pnl)}` : '—'}
+                <td className="px-4 py-3 font-mono text-sm text-gray-400">
+                  {t.entry_price != null ? fmtPrice(t.charges ?? 0) : '—'}
                 </td>
+                <td className="px-4 py-3 font-mono text-sm text-gray-400">
+                  {t.entry_price != null ? fmtPrice(t.tax ?? 0) : '—'}
+                </td>
+                {(() => {
+                  const netPnl = t.net_pnl ?? t.pnl
+                  return (
+                    <td className={cn('px-4 py-3 font-mono text-sm font-semibold', netPnl >= 0 ? 'pnl-pos' : 'pnl-neg')}>
+                      {t.entry_price != null ? `${netPnl >= 0 ? '+' : ''}${fmtPrice(netPnl)}` : '—'}
+                    </td>
+                  )
+                })()}
                 <td className="px-4 py-3 text-xs text-gray-400">{t.source_pod || t.source_desk || '—'}</td>
               </tr>
             ))}
             {!isLoading && trades.length === 0 && (
-              <tr><td colSpan={9} className="px-4 py-8 text-center text-gray-600">No trades yet</td></tr>
+              <tr><td colSpan={11} className="px-4 py-8 text-center text-gray-600">No trades yet</td></tr>
             )}
           </tbody>
         </table>

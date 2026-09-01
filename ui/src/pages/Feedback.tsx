@@ -1,6 +1,8 @@
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { fetchJson, postJson, type FeedbackSummary } from '../lib/api'
 import { cn } from '../lib/utils'
+import { CardSkeleton } from '../components/Skeleton'
+import { useStore } from '../hooks/useStore'
 
 interface StratStat {
   strategy:   string
@@ -18,8 +20,9 @@ interface AgentW {
 }
 
 export default function FeedbackPage() {
+  const selectedPortfolioId = useStore(s => s.selectedPortfolioId)
   const { data, isLoading } = useQuery<FeedbackSummary>({
-    queryKey: ['feedback'],
+    queryKey: ['feedback', selectedPortfolioId],
     queryFn:  () => fetchJson('/feedback/summary'),
   })
 
@@ -39,7 +42,7 @@ export default function FeedbackPage() {
         </button>
       </div>
 
-      {isLoading && <div className="text-gray-500 text-sm">Loading…</div>}
+      {isLoading && <CardSkeleton lines={3} />}
 
       <div className="grid grid-cols-2 gap-6">
         {/* Strategy performance */}

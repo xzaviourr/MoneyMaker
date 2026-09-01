@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { fetchJson, type ServiceLog } from '../lib/api'
 import { cn } from '../lib/utils'
+import { TableSkeleton } from '../components/Skeleton'
+import { useStore } from '../hooks/useStore'
 
 const TABS: { key: string; label: string }[] = [
   { key: 'yahoo_finance', label: 'Yahoo Finance' },
@@ -16,11 +18,12 @@ function levelColor(level: string) {
 }
 
 export default function LogsPage() {
+  const selectedPortfolioId = useStore(s => s.selectedPortfolioId)
   const [service, setService] = useState(TABS[0].key)
   const [openId, setOpenId]   = useState<number | null>(null)
 
   const { data: rows = [], isLoading } = useQuery<ServiceLog[]>({
-    queryKey: ['logs', service],
+    queryKey: ['logs', service, selectedPortfolioId],
     queryFn:  () => fetchJson(`/logs?service=${service}&limit=200`),
     refetchInterval: 5000,
   })
@@ -42,7 +45,7 @@ export default function LogsPage() {
         ))}
       </div>
 
-      {isLoading && <div className="text-gray-500 text-sm">Loading…</div>}
+      {isLoading && <TableSkeleton rows={6} cols={4} />}
 
       <div className="space-y-1">
         {rows.map(r => (

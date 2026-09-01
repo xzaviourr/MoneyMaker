@@ -16,13 +16,14 @@ import structlog
 
 from ..brokers.broker_gateway import BrokerGateway
 from ..shared import feature_toggles
+from ..shared.data_paths import DATA_DIR
 from ..shared.message_bus import MessageBus
 from ..shared.schemas import Message, MessageType, Trade
 from .trade_attribution_engine import TradeAttributionEngine
 
 log = structlog.get_logger(__name__)
 
-_SEEN_PATH = Path("data/attributed_trades.json")
+_SEEN_PATH = DATA_DIR / "attributed_trades.json"
 
 
 class OutcomeAttributionTimer:

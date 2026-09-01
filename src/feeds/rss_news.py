@@ -12,7 +12,7 @@ from typing import Any
 
 import aiohttp
 
-from .service_log import log_event
+from ..shared.service_log import log_event
 
 _FEEDS: dict[str, str] = {
     "economic_times": "https://economictimes.indiatimes.com/markets/stocks/rssfeeds/2146842.cms",

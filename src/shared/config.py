@@ -4,6 +4,7 @@ Import `settings` anywhere; it's a singleton.
 """
 from __future__ import annotations
 
+import os
 import warnings
 from functools import lru_cache
 from pathlib import Path
@@ -112,7 +113,14 @@ def get_settings() -> Settings:
 
 def load_toml_config(path: Path | None = None) -> dict:
     if path is None:
-        path = Path(__file__).parent.parent.parent / "config.toml"
+        # A second portfolio points MM_CONFIG_PATH at its own .toml file so it
+        # can differ from the default on ANY setting — risk thresholds,
+        # conviction bar, stock universe, news sources, capital, everything —
+        # without this module needing to know in advance which dimension a
+        # given portfolio wants to vary on. Set this env var in the shell
+        # before launching `python main.py`, not inside it.
+        override = os.environ.get("MM_CONFIG_PATH")
+        path = Path(override) if override else Path(__file__).parent.parent.parent / "config.toml"
     if not path.exists():
         return {}
     with open(path, "rb") as f:
@@ -121,3 +129,11 @@ def load_toml_config(path: Path | None = None) -> dict:
 
 settings = get_settings()
 toml_cfg = load_toml_config()
+
+# Quick single-value overrides on top of whichever config file loaded above —
+# convenient when a portfolio only needs to differ on capital or port and
+# doesn't warrant a whole separate .toml file.
+if os.environ.get("MM_CAPITAL"):
+    toml_cfg.setdefault("capital", {})["total_capital"] = int(os.environ["MM_CAPITAL"])
+if os.environ.get("MM_PORT"):
+    toml_cfg.setdefault("api", {})["port"] = int(os.environ["MM_PORT"])

@@ -70,6 +70,7 @@ from src.feedback import (
     OutcomeAttributionTimer,
     RegimeAdjustedScorer,
     SystemReviewAgent,
+    RejectedIdeaTracker,
 )
 from src.api.main import app
 from src.api.routes.pods import set_pod_supervisor
@@ -127,11 +128,14 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout), _file_handler],
 )
 
-# Silence noisy third-party loggers
-logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+# Silence noisy third-party loggers — keep yfinance at WARNING so fetch
+# failures actually appear in the terminal instead of disappearing silently.
+logging.getLogger("yfinance").setLevel(logging.WARNING)
 logging.getLogger("peewee").setLevel(logging.CRITICAL)
 logging.getLogger("urllib3").setLevel(logging.CRITICAL)
 logging.getLogger("httpx").setLevel(logging.CRITICAL)
+logging.getLogger("azure.identity").setLevel(logging.CRITICAL)   # Key Vault auth noise
+logging.getLogger("azure.core").setLevel(logging.CRITICAL)
 
 log = structlog.get_logger("main")
 
@@ -144,26 +148,60 @@ class FeedbackSystem:
         self.review_agent = review_agent
 
 
+def _init_ledger(demo: bool) -> None:
+    from src.audit.explainability_ledger import ExplainabilityLedger
+    ExplainabilityLedger.init(mode="demo" if demo else "paper")
+
+
+async def _verify_azure(deployment: str, endpoint: str) -> None:
+    """Crash loudly if Azure deployment is unreachable — never silently fall back."""
+    import httpx
+    from src.shared.config import settings as _s
+    url = f"{endpoint.rstrip('/')}/openai/deployments/{deployment}/chat/completions?api-version=2024-12-01-preview"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(url,
+                headers={"api-key": _s.azure_openai_api_key},
+                json={"messages": [{"role": "user", "content": "ping"}], "max_tokens": 1},
+            )
+        if r.status_code == 404:
+            print("\n" + "="*60)
+            print("STARTUP FAILED — Azure deployment not found.")
+            print(f"  Deployment tried : {deployment}")
+            print(f"  Endpoint         : {endpoint}")
+            print("  Fix: open portal.azure.com → your AI Foundry resource")
+            print("       → Deployments tab → copy the exact name → update")
+            print("       config.toml [llm.deployments] → restart.")
+            print("="*60 + "\n")
+            sys.exit(1)
+        if r.status_code == 401:
+            print("\n" + "="*60)
+            print("STARTUP FAILED — Azure API key rejected (401).")
+            print("  Check AZURE_OPENAI_API_KEY in your .env file.")
+            print("="*60 + "\n")
+            sys.exit(1)
+    except Exception as exc:
+        print(f"\nSTARTUP FAILED — Could not reach Azure: {exc}\n")
+        sys.exit(1)
+    log.info("llm.azure_verified", deployment=deployment)
+
+
 def _init_llm(demo: bool) -> LLMGateway:
-    """Initialise LLM gateway. Falls back to mock if no Azure credentials."""
     if demo:
         from src.llm.mock_provider import MockLLMProvider
         log.info("llm.using_mock_provider", reason="demo_mode")
         return LLMGateway.init(MockLLMProvider())
 
     from src.shared.config import settings as _settings
-    azure_key = _settings.azure_openai_api_key
-    if not azure_key:
-        from src.llm.mock_provider import MockLLMProvider
-        log.warning(
-            "llm.no_azure_key_found",
-            msg="AZURE_OPENAI_API_KEY not set — falling back to MockLLMProvider. "
-                "Set the env var and restart for real LLM analysis.",
-        )
-        return LLMGateway.init(MockLLMProvider())
+    if not _settings.azure_openai_api_key:
+        print("\n" + "="*60)
+        print("STARTUP FAILED — AZURE_OPENAI_API_KEY not set in .env.")
+        print("  Use --demo to run without Azure credentials.")
+        print("="*60 + "\n")
+        sys.exit(1)
 
     log.info("llm.using_azure_openai")
-    return LLMGateway.init()  # uses AzureOpenAIProvider()
+    return LLMGateway.init()
 
 
 async def _watch_yahoo_fetches(bus: MessageBus) -> None:
@@ -201,7 +239,17 @@ async def _register_pods(pod_supervisor: PodSupervisor, broker: BrokerGateway) -
     ]
 
     capital = CapitalTracker.get()
-    per_pod_budget = Decimal(str(toml_cfg.get("pods", {}).get("per_pod_budget", 100_000)))
+    # per_pod_budget in config.toml is a cap, not a fixed draw — it was
+    # previously allocated as-is regardless of the intraday pillar's real
+    # size, which only ever worked by coincidence at the default ₹10L
+    # capital (₹4L intraday / 4 pods = exactly ₹1L each). Any other total
+    # capital (e.g. a smaller second portfolio) either overdraws the pillar
+    # and crashes on the last pod, or leaves it under-used. Split the real
+    # pillar evenly across pods instead, capped at the configured ceiling.
+    configured_cap = Decimal(str(toml_cfg.get("pods", {}).get("per_pod_budget", 100_000)))
+    intraday_total = await capital.available_in_pillar("intraday")
+    fair_share     = (intraday_total / len(pods)) if pods else Decimal("0")
+    per_pod_budget = min(configured_cap, fair_share)
 
     classifier = RegimeClassifier.get()
     for pod in pods:
@@ -216,8 +264,30 @@ async def _register_pods(pod_supervisor: PodSupervisor, broker: BrokerGateway) -
     return pods
 
 
+def _check_yahoo_finance() -> None:
+    """Quick startup check — fetches one price to confirm Yahoo Finance is reachable.
+    Prints a visible warning (not an error) so the system still starts but you
+    immediately know if live data will be missing."""
+    from src.shared.market_data_cache import get_quote
+    print("Checking Yahoo Finance connectivity...", flush=True)
+    price = get_quote("RELIANCE", "NSE")
+    if price:
+        print(f"  Yahoo Finance OK — RELIANCE.NS = ₹{price:.2f}", flush=True)
+    else:
+        print("\n" + "=" * 60, flush=True)
+        print("WARNING — Yahoo Finance returned no price for RELIANCE.NS.", flush=True)
+        print("  Dashboard will show stale data until a price can be fetched.", flush=True)
+        print("  Possible causes:", flush=True)
+        print("    1. Market is closed (data still works, previous close used)", flush=True)
+        print("    2. yfinance needs upgrading: pip install --upgrade yfinance", flush=True)
+        print("    3. Yahoo Finance is rate-limiting this IP (auto-retry in 1h)", flush=True)
+        print("  System will start anyway. Watch the Logs page for yfinance errors.", flush=True)
+        print("=" * 60 + "\n", flush=True)
+
+
 async def _boot(paper: bool = False, api_only: bool = False, demo: bool = False) -> None:
     log.info("moneymaker.boot_start", paper=paper, api_only=api_only, demo=demo)
+    _check_yahoo_finance()
 
     # 1. MessageBus + FlowTracker (records every message for the graph dashboard)
     bus = MessageBus.get()
@@ -232,7 +302,15 @@ async def _boot(paper: bool = False, api_only: bool = False, demo: bool = False)
     tracker = CapitalTracker.get()
     await tracker.initialise()
 
-    # 3. LLM Gateway — must come before anything that calls LLMGateway.get()
+    # 3. Ledger mode — tag all decisions with demo/paper before anything writes
+    _init_ledger(demo=demo)
+
+    # 4. LLM Gateway — verify Azure is reachable before booting (paper mode only)
+    if not demo:
+        from src.llm.azure_openai.deployment_map import get_deployment
+        from src.shared.schemas import LLMTier
+        from src.shared.config import settings as _s
+        await _verify_azure(get_deployment(LLMTier.FAST), _s.azure_openai_endpoint)
     llm = _init_llm(demo=demo)
     log.info("llm.gateway_ready", provider=llm._provider.name if hasattr(llm._provider, "name") else type(llm._provider).__name__)
 
@@ -264,6 +342,12 @@ async def _boot(paper: bool = False, api_only: bool = False, demo: bool = False)
     event_pod = next(p for p in pods if p.pod_id == "event_pod")
     await pod_supervisor.start()
     set_pod_supervisor(pod_supervisor)
+
+    # Correct the capital ledger against real open positions right away (it's
+    # in-memory only and resets to "nothing deployed" on every restart, while
+    # the broker's real positions persist — see reconcile_with_broker) and
+    # keep it self-correcting every 5 minutes from here on.
+    await tracker.start_reconcile_loop()
 
     # 8. Long-Term Desk
     lt_desk = LongTermDesk()
@@ -300,6 +384,9 @@ async def _boot(paper: bool = False, api_only: bool = False, demo: bool = False)
 
     attr_timer = OutcomeAttributionTimer(attribution_engine)
     await attr_timer.start()
+
+    rejected_tracker = RejectedIdeaTracker()
+    await rejected_tracker.start()
 
     scorer    = RegimeAdjustedScorer(analyzer)
     optimizer = ParameterOptimizer(analyzer)

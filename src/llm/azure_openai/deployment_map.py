@@ -17,7 +17,6 @@ def get_deployment(tier: LLMTier) -> str:
     overrides = (
         toml_cfg
         .get("llm", {})
-        .get("azure_openai", {})
         .get("deployments", {})
     )
     return overrides.get(tier.value, _DEFAULTS[tier.value])

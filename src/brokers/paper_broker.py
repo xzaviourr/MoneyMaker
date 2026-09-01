@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import random
 import uuid
 from datetime import datetime
 from decimal import Decimal
@@ -28,11 +27,36 @@ from ..shared.schemas import (
     Quote,
 )
 from ..shared.config import toml_cfg
+from ..shared.data_paths import DATA_DIR
+from ..shared.trade_cost_estimator import (
+    current_financial_year_label,
+    estimate_capital_gains_tax,
+    estimate_trade_cost,
+)
 from .base_broker import BaseBroker, QuoteCallback
 
 log = structlog.get_logger(__name__)
 
-_STATE_PATH = Path("data/paper_broker_state.json")
+_STATE_PATH = DATA_DIR / "paper_broker_state.json"
+
+# Positions are tracked globally per symbol, not per pod/desk. Only these
+# system-level managers are allowed to exit a position they didn't open
+# themselves (portfolio_manager rebalances/exits any holding; position_monitor
+# instead re-tags its own exits with the *original* position's source, so it
+# never needs to appear here). Anyone else must own the position it's exiting —
+# otherwise one pod's/desk's independent signal can silently close a position
+# opened by a completely different one, just because they share a symbol.
+_CROSS_SOURCE_EXIT_ALLOWED = {"portfolio_manager"}
+
+
+def _last_scalar(df, column: str):
+    """Most recent value in a column, defensively unwrapping yfinance's
+    occasional MultiIndex-column shape — same pattern already used in
+    long_term_desk.py's _get_current_price, applied here too."""
+    series = df[column]
+    if hasattr(series, "shape") and len(getattr(series, "shape", (1,))) > 1:
+        series = series.iloc[:, 0]
+    return series.iloc[-1]
 
 
 class PaperBroker(BaseBroker):
@@ -49,13 +73,17 @@ class PaperBroker(BaseBroker):
     def __init__(self) -> None:
         cfg = toml_cfg.get("broker", {}).get("paper", {})
         self._slippage_bps = Decimal(str(cfg.get("slippage_bps", 5.0)))
-        self._commission = Decimal(str(cfg.get("commission_flat", 20.0)))
         self._balance = Decimal(str(
             toml_cfg.get("capital", {}).get("total_capital", 1_000_000)
         ))
         self._positions: dict[str, Position] = {}
         self._orders: dict[str, Order] = {}
         self._trade_book: list[dict] = []
+        # ₹1.25L LTCG exemption is per-financial-year, not per-trade — track
+        # cumulative LTCG booked so far this FY so it's applied progressively
+        # instead of every long-hold winner getting the exemption from scratch.
+        self._ltcg_realized_this_fy = Decimal("0")
+        self._fy_label = current_financial_year_label(datetime.utcnow())
         self._lock = asyncio.Lock()
         self._connected = False
         self._stream_task: asyncio.Task | None = None  # type: ignore[type-arg]
@@ -64,6 +92,7 @@ class PaperBroker(BaseBroker):
         # would ever receive a tick.
         self._subscriptions: list[tuple[list[tuple[str, str]], QuoteCallback]] = []
         self._prices: dict[str, Decimal] = {}
+        self._last_bar_ts: dict[str, object] = {}  # last real bar timestamp fed per symbol
         self._load_state()  # resume balance/positions/trades from before a restart, if any
 
     # ── Persistence ────────────────────────────────────────────────────────
@@ -78,6 +107,12 @@ class PaperBroker(BaseBroker):
             self._balance = Decimal(data["balance"])
             self._positions = {k: Position(**v) for k, v in data.get("positions", {}).items()}
             self._trade_book = data.get("trade_book", [])
+            # Only carry the LTCG-exemption counter forward if we're still in
+            # the same Indian financial year (Apr-Mar) it was recorded in —
+            # otherwise a restart in a new FY would wrongly keep last year's
+            # exemption usage and under-apply this year's ₹1.25L allowance.
+            if data.get("fy_label") == self._fy_label:
+                self._ltcg_realized_this_fy = Decimal(data.get("ltcg_realized_this_fy", "0"))
             log.info("paper_broker.state_restored", balance=str(self._balance),
                      positions=len(self._positions), trades=len(self._trade_book))
         except Exception as exc:
@@ -90,6 +125,8 @@ class PaperBroker(BaseBroker):
                 "balance":    str(self._balance),
                 "positions":  {k: json.loads(v.model_dump_json()) for k, v in self._positions.items()},
                 "trade_book": self._trade_book,
+                "fy_label":   self._fy_label,
+                "ltcg_realized_this_fy": str(self._ltcg_realized_this_fy),
             }
             tmp = _STATE_PATH.with_suffix(".tmp")
             tmp.write_text(json.dumps(data))
@@ -188,7 +225,7 @@ class PaperBroker(BaseBroker):
     ) -> None:
         self._subscriptions.append((symbols, callback))
         if self._stream_task is None or self._stream_task.done():
-            self._stream_task = asyncio.create_task(self._mock_stream())
+            self._stream_task = asyncio.create_task(self._real_quote_stream())
 
     def add_symbols(self, callback: QuoteCallback, symbols: list[tuple[str, str]]) -> None:
         """Grow an existing subscriber's watchlist at runtime — e.g. when news
@@ -209,31 +246,72 @@ class PaperBroker(BaseBroker):
                 pass
         self._subscriptions.clear()
 
-    async def _mock_stream(self) -> None:
-        """Emits random-walk quotes every second for each subscriber's own watchlist."""
-        from datetime import datetime
+    _STREAM_POLL_SECONDS = 20
+
+    async def _real_quote_stream(self) -> None:
+        """Feeds every subscribed pod real Yahoo Finance 1-minute bars —
+        replaces a prior random-walk mock (found 07-28: price moved via
+        random.gauss noise and volume was random.randint every tick, so
+        pods' EMA-crossover + volume-spike signals were chasing pure noise,
+        not real market activity, which is why intraday pods essentially
+        never traded despite having capital allocated).
+
+        market_data_cache's 'intraday' TTL is 5 minutes, so the underlying
+        data only actually refreshes that often no matter how frequently we
+        poll here — polling every _STREAM_POLL_SECONDS just keeps this
+        responsive to a fresh bar as soon as the cache allows one, at the
+        cost of cheap cache-hit reads, not extra Yahoo requests. Each symbol
+        is only pushed to subscribers when its latest bar's timestamp
+        actually changes, so pods don't get fed N duplicate copies of the
+        same bar between real updates.
+        """
+        from ..shared import market_data_cache
+
+        loop = asyncio.get_event_loop()
         while True:
-            for symbols, callback in list(self._subscriptions):
-                for symbol, exchange in symbols:
-                    if symbol not in self._prices:
-                        q = await self.get_quote(symbol, exchange)
-                        self._prices[symbol] = q.ltp
-                    else:
-                        pct = Decimal(str(random.gauss(0, 0.002)))
-                        self._prices[symbol] *= (1 + pct)
+            seen: set[tuple[str, str]] = set()
+            for symbols, _cb in list(self._subscriptions):
+                seen.update(symbols)
+
+            for symbol, exchange in seen:
+                try:
+                    suffix = ".NS" if exchange == "NSE" else ".BO"
+                    df = await loop.run_in_executor(
+                        None,
+                        lambda s=symbol, sfx=suffix: market_data_cache.download(
+                            f"{s}{sfx}", period="1d", interval="1m"
+                        ),
+                    )
+                    if df is None or df.empty:
+                        continue
+
+                    last_ts = df.index[-1]
+                    if self._last_bar_ts.get(symbol) == last_ts:
+                        continue  # same bar as last poll — nothing new to feed
+                    self._last_bar_ts[symbol] = last_ts
+
+                    close_price = Decimal(str(float(_last_scalar(df, "Close"))))
+                    self._prices[symbol] = close_price
                     q = Quote(
                         symbol=symbol,
                         exchange=Exchange(exchange),
                         timestamp=datetime.utcnow(),
-                        ltp=self._prices[symbol],
-                        open=self._prices[symbol],
-                        high=self._prices[symbol] * Decimal("1.001"),
-                        low=self._prices[symbol] * Decimal("0.999"),
-                        close=self._prices[symbol],
-                        volume=random.randint(1000, 100_000),
+                        ltp=close_price,
+                        open=Decimal(str(float(_last_scalar(df, "Open")))),
+                        high=Decimal(str(float(_last_scalar(df, "High")))),
+                        low=Decimal(str(float(_last_scalar(df, "Low")))),
+                        close=close_price,
+                        volume=int(_last_scalar(df, "Volume")),
                     )
-                    callback(q)
-            await asyncio.sleep(1.0)
+                except Exception:
+                    log.debug("paper_broker.stream_quote_fetch_failed", symbol=symbol)
+                    continue
+
+                for symbols, callback in list(self._subscriptions):
+                    if (symbol, exchange) in symbols:
+                        callback(q)
+
+            await asyncio.sleep(self._STREAM_POLL_SECONDS)
 
     # ── Orders ─────────────────────────────────────────────────────────────
 
@@ -262,14 +340,27 @@ class PaperBroker(BaseBroker):
             quote.ltp, order.side, order.order_type
         )
         fill_value = fill_price * Decimal(str(order.quantity))
-        commission = self._commission
 
         realized_pnl = Decimal("0")
+        tax = Decimal("0")
+        charges = Decimal("0")
         entry_price: Optional[Decimal] = None
         entry_time: Optional[datetime] = None
         async with self._lock:
             if order.side == OrderSide.BUY:
-                cost = fill_value + commission
+                # A position's tax treatment (intraday speculative income vs.
+                # STCG/LTCG) is fixed at entry — an exit later placed by
+                # portfolio_manager (source_pod="portfolio_manager", no
+                # source_desk) must not make a delivery position look
+                # intraday, so we tag it once here and never re-derive it.
+                is_intraday_leg = order.source_desk is None
+                cost_estimate = estimate_trade_cost(
+                    symbol=order.symbol, exchange=order.exchange, quantity=order.quantity,
+                    price=fill_price, side=order.side, order_type=order.order_type,
+                    is_intraday=is_intraday_leg,
+                )
+                charges = cost_estimate.commission
+                cost = fill_value + charges
                 if cost > self._balance:
                     return OrderResult(
                         order_id=order.id,
@@ -277,7 +368,7 @@ class PaperBroker(BaseBroker):
                         rejection_reason="Insufficient funds",
                     )
                 self._balance -= cost
-                self._update_position(order, fill_price)
+                self._update_position(order, fill_price, charges, is_intraday_leg)
             else:
                 pos_key = f"{order.symbol}_{order.exchange.value}"
                 if pos_key not in self._positions:
@@ -286,11 +377,47 @@ class PaperBroker(BaseBroker):
                         status=OrderStatus.REJECTED,
                         rejection_reason="No position to sell",
                     )
-                entry_price  = self._positions[pos_key].average_price
-                entry_time   = self._positions[pos_key].opened_at
-                realized_pnl = (fill_price - entry_price) * Decimal(str(order.quantity)) - commission
-                self._balance += fill_value - commission
-                self._close_or_reduce_position(order, fill_price)
+                pos = self._positions[pos_key]
+                same_source = (order.source_pod, order.source_desk) == (pos.source_pod, pos.source_desk)
+                if not same_source and order.source_pod not in _CROSS_SOURCE_EXIT_ALLOWED:
+                    log.warning("paper_broker.rejected_cross_source_exit", symbol=order.symbol,
+                                position_source=(pos.source_pod, pos.source_desk),
+                                order_source=(order.source_pod, order.source_desk))
+                    return OrderResult(
+                        order_id=order.id,
+                        status=OrderStatus.REJECTED,
+                        rejection_reason=(
+                            f"Position in {order.symbol} is owned by "
+                            f"{pos.source_pod or pos.source_desk or 'another strategy'} — "
+                            f"refusing cross-strategy exit"
+                        ),
+                    )
+                entry_price  = pos.average_price
+                entry_time   = pos.opened_at
+                qty_before   = pos.quantity
+                cost_estimate = estimate_trade_cost(
+                    symbol=order.symbol, exchange=order.exchange, quantity=order.quantity,
+                    price=fill_price, side=order.side, order_type=order.order_type,
+                    is_intraday=pos.is_intraday,
+                )
+                exit_charges = cost_estimate.commission
+                # This leg's share of the entry-side charges paid when the
+                # position was opened, so realized P&L reflects the full
+                # round-trip cost, not just the exit leg.
+                proportional_entry_charges = (
+                    pos.entry_charges * Decimal(order.quantity) / Decimal(qty_before)
+                    if qty_before else Decimal("0")
+                )
+                charges = exit_charges + proportional_entry_charges
+                realized_pnl = (fill_price - entry_price) * Decimal(str(order.quantity)) - charges
+
+                holding_days = (datetime.utcnow() - entry_time).days if entry_time else 0
+                tax, self._ltcg_realized_this_fy = estimate_capital_gains_tax(
+                    realized_pnl, pos.is_intraday, holding_days, self._ltcg_realized_this_fy,
+                )
+
+                self._balance += fill_value - exit_charges - tax
+                self._close_or_reduce_position(order, fill_price, proportional_entry_charges)
 
         broker_order_id = f"PAPER_{uuid.uuid4().hex[:8].upper()}"
         order.broker_order_id = broker_order_id
@@ -305,6 +432,9 @@ class PaperBroker(BaseBroker):
             "entry_price": float(entry_price) if entry_price is not None else None,
             "entry_time":  entry_time.isoformat() if entry_time is not None else None,
             "pnl":         float(realized_pnl),
+            "charges":     float(charges),
+            "tax":         float(tax),
+            "net_pnl":     float(realized_pnl - tax),
             "slippage":    float(abs(fill_price - quote.ltp) * Decimal(str(order.quantity))),
             "source_pod":  order.source_pod,
             "source_desk": order.source_desk,
@@ -390,7 +520,10 @@ class PaperBroker(BaseBroker):
             return price + slip if side == OrderSide.BUY else price - slip
         return price
 
-    def _update_position(self, order: Order, fill_price: Decimal) -> None:
+    def _update_position(
+        self, order: Order, fill_price: Decimal, charges: Decimal = Decimal("0"),
+        is_intraday: bool = True,
+    ) -> None:
         key = f"{order.symbol}_{order.exchange.value}"
         if key in self._positions:
             pos = self._positions[key]
@@ -401,6 +534,7 @@ class PaperBroker(BaseBroker):
                 "average_price": avg,
                 "current_price": fill_price,
                 "source_pod": order.source_pod,
+                "entry_charges": pos.entry_charges + charges,
                 # Refresh the exit plan to the latest signal's targets — otherwise a
                 # position opened before this feature existed (stop_loss=None) would
                 # stay unmonitored forever even after averaging into it again.
@@ -422,9 +556,13 @@ class PaperBroker(BaseBroker):
                 source_pod=order.source_pod,
                 source_desk=order.source_desk,
                 strategy=order.strategy,
+                is_intraday=is_intraday,
+                entry_charges=charges,
             )
 
-    def _close_or_reduce_position(self, order: Order, fill_price: Decimal) -> None:
+    def _close_or_reduce_position(
+        self, order: Order, fill_price: Decimal, proportional_entry_charges: Decimal = Decimal("0"),
+    ) -> None:
         key = f"{order.symbol}_{order.exchange.value}"
         pos = self._positions[key]
         if order.quantity >= pos.quantity:
@@ -433,6 +571,7 @@ class PaperBroker(BaseBroker):
             self._positions[key] = pos.model_copy(update={
                 "quantity": pos.quantity - order.quantity,
                 "current_price": fill_price,
+                "entry_charges": pos.entry_charges - proportional_entry_charges,
             })
 
     async def mark_to_market(self) -> None:
@@ -460,6 +599,6 @@ class PaperBroker(BaseBroker):
         async with self._lock:
             pos = self._positions.pop(key, None)
             if pos:
-                self._balance += pos.average_price * pos.quantity + self._commission
+                self._balance += pos.average_price * pos.quantity + pos.entry_charges
                 self._save_state()
         return pos

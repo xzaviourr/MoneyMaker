@@ -34,6 +34,11 @@ _DEFAULT_WATCHLIST = [
     ("AXISBANK", "NSE"),
 ]
 
+# EMAs must diverge by at least this % — filters micro-crossovers on noise
+_MIN_EMA_SPREAD_PCT = 0.20
+# Price must have moved at least this % in the signal direction over the fast EMA window
+_MIN_DIRECTIONAL_MOVE_PCT = 0.35
+
 
 def _load_watchlist(override: list | None) -> list[tuple[str, str]]:
     if override:
@@ -55,7 +60,7 @@ class MomentumPod(BasePod):
         gateway: BrokerGateway,
         fast_ema: int = 9,
         slow_ema: int = 21,
-        volume_multiplier: float = 1.5,
+        volume_multiplier: float = 2.0,
         watchlist: Optional[list[tuple[str, str]]] = None,
     ) -> None:
         config = PodConfig(
@@ -118,17 +123,33 @@ class MomentumPod(BasePod):
         if not cross or not vol_ok:
             return None
 
-        # Avoid duplicate signals
+        # Guard 1: EMAs must be meaningfully separated, not just noise-touching
+        spread_pct = abs(fast_ema - slow_ema) / slow_ema * 100
+        if spread_pct < _MIN_EMA_SPREAD_PCT:
+            return None
+
+        # Guard 2: price must have actually moved in the signal direction
+        window = prices[-self._fast_period:]
+        if cross == "bull":
+            low_in_window = min(window)
+            directional_move_pct = (price - low_in_window) / low_in_window * 100 if low_in_window else 0.0
+        else:
+            high_in_window = max(window)
+            directional_move_pct = (high_in_window - price) / high_in_window * 100 if high_in_window else 0.0
+        if directional_move_pct < _MIN_DIRECTIONAL_MOVE_PCT:
+            return None
+
+        # Avoid duplicate signals on the same cross direction
         if self._prev_cross.get(key) == cross:
             return None
         self._prev_cross[key] = cross
 
-        spread_pct = abs(fast_ema - slow_ema) / slow_ema * 100
-        conviction = min(0.9, 0.4 + spread_pct * 10 + (volume / avg_vol - 1) * 0.1)
+        vol_ratio  = volume / avg_vol
+        conviction = min(0.90, 0.45 + min(spread_pct, 1.0) * 0.20 + min(directional_move_pct, 1.0) * 0.15 + min(vol_ratio - self._vol_mult, 2.0) * 0.05)
 
         direction  = SignalDirection.LONG if cross == "bull" else SignalDirection.SHORT
-        strength   = SignalStrength.STRONG if conviction > 0.7 else SignalStrength.MODERATE
-        stop_mult  = Decimal("0.985") if direction == SignalDirection.LONG else Decimal("1.015")
+        strength   = SignalStrength.STRONG if conviction > 0.70 else SignalStrength.MODERATE
+        stop_mult  = Decimal("0.975") if direction == SignalDirection.LONG else Decimal("1.025")
 
         return TradeSignal(
             symbol=quote.symbol,
@@ -143,7 +164,8 @@ class MomentumPod(BasePod):
             regime_compatible=self.config.compatible_regimes,
             rationale=(
                 f"EMA{self._fast_period}({'>'if cross=='bull' else '<'})"
-                f"EMA{self._slow_period}, vol={volume/avg_vol:.1f}x avg"
+                f"EMA{self._slow_period}, spread={spread_pct:.2f}%, "
+                f"move={directional_move_pct:.2f}%, vol={vol_ratio:.1f}x avg"
             ),
         )
 

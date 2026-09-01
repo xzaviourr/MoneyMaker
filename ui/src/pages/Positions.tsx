@@ -1,10 +1,15 @@
 import { useQuery } from '@tanstack/react-query'
 import { fetchJson, type Position } from '../lib/api'
 import { fmtInr, fmt, cn } from '../lib/utils'
+import { TableSkeleton } from '../components/Skeleton'
+import { useStore } from '../hooks/useStore'
 
 export default function PositionsPage() {
+  const selectedSymbol    = useStore(s => s.selectedSymbol)
+  const setSelectedSymbol = useStore(s => s.setSelectedSymbol)
+  const selectedPortfolioId = useStore(s => s.selectedPortfolioId)
   const { data: positions = [], isLoading } = useQuery<Position[]>({
-    queryKey:        ['positions'],
+    queryKey:        ['positions', selectedPortfolioId],
     queryFn:         () => fetchJson('/portfolio/positions'),
     refetchInterval: 10_000,
   })
@@ -23,7 +28,7 @@ export default function PositionsPage() {
         </div>
       </div>
 
-      {isLoading && <div className="text-gray-500 text-sm">Loading…</div>}
+      {isLoading && <TableSkeleton rows={4} cols={7} />}
 
       <div className="card overflow-x-auto p-0">
         <table className="w-full text-left">
@@ -46,8 +51,20 @@ export default function PositionsPage() {
               const pnl    = parseFloat(p.unrealized_pnl || '0')
               const pnlPct = p.unrealized_pnl_pct ?? 0
               return (
-                <tr key={i} className="border-b border-gray-800 hover:bg-gray-900 transition-colors">
-                  <td className="px-4 py-3 font-mono font-semibold text-sm">{p.symbol}</td>
+                <tr key={i} className={cn('border-b border-gray-800 hover:bg-gray-900 transition-colors', selectedSymbol === p.symbol && 'bg-brand-900/20')}>
+                  <td className="px-4 py-3">
+                    <button
+                      onClick={() => setSelectedSymbol(selectedSymbol === p.symbol ? null : p.symbol)}
+                      className={cn(
+                        'font-mono font-semibold text-sm transition-colors text-left underline decoration-dotted underline-offset-2',
+                        selectedSymbol === p.symbol
+                          ? 'text-brand-500 decoration-brand-500'
+                          : 'text-white decoration-gray-600 hover:text-brand-400 hover:decoration-brand-400'
+                      )}
+                    >
+                      {p.symbol}
+                    </button>
+                  </td>
                   <td className="px-4 py-3 text-sm text-gray-400">{p.exchange}</td>
                   <td className="px-4 py-3">
                     <span className={cn('badge', p.side === 'BUY' ? 'bg-green-900 text-green-300' : 'bg-red-900 text-red-300')}>
